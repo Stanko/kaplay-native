@@ -108,8 +108,7 @@ impl Inner {
 }
 
 fn gl_version(display: &impl GlDisplay) -> Option<(u32, u32)> {
-    let name = unsafe { CStr::from_bytes_with_nul_unchecked(b"glGetString\0") };
-    let pointer = display.get_proc_address(name);
+    let pointer = display.get_proc_address(c"glGetString");
     if pointer.is_null() {
         return None;
     }
