@@ -466,16 +466,16 @@ fn crop_pixmap(
         if source_y < 0 || source_y >= source_height {
             continue;
         }
-        let start_x = x.max(0) as usize;
-        let end_x = (x as i64 + width as i64).min(source_width).max(0);
-        if end_x <= start_x as i64 {
+        let start = (-(x as i64)).max(0);
+        let end = (source_width - x as i64).min(width as i64).max(0);
+        if end <= start {
             continue;
         }
-        let dest_offset = row as usize * width as usize * 4 + start_x * 4;
-        let source_offset = source_y as usize * source_stride + start_x * 4;
-        let length = (end_x as usize - start_x) * 4;
-        output.data_mut()[dest_offset..dest_offset + length]
-            .copy_from_slice(&source.as_ref().data()[source_offset..source_offset + length]);
+        let count = (end - start) as usize;
+        let dest_offset = row as usize * width as usize * 4 + start as usize * 4;
+        let source_offset = source_y as usize * source_stride + (x as i64 + start) as usize * 4;
+        output.data_mut()[dest_offset..dest_offset + count * 4]
+            .copy_from_slice(&source.as_ref().data()[source_offset..source_offset + count * 4]);
     }
 
     Some(output)
@@ -545,5 +545,54 @@ mod tests {
         let (store, canvas, _context) = setup();
         let png = store.to_png(canvas).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn crops_image_regions() {
+        let (mut store, _canvas, context) = setup();
+        let pixels = [
+            1u8, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255, //
+            4, 0, 0, 255, 5, 0, 0, 255, 6, 0, 0, 255,
+        ];
+        store.put_image_data(context, 0, 0, 3, 2, &pixels);
+        let source = ImageSource {
+            width: 3,
+            height: 2,
+            data: &pixels,
+        };
+        store.draw_image(context, source, 1.0, 0.0, 2.0, 1.0, 0.0, 0.0, 2.0, 1.0);
+        let read = store.get_image_data(context, 0, 0, 2, 1);
+        assert_eq!(&read[..4], &[2, 0, 0, 255]);
+        assert_eq!(&read[4..], &[3, 0, 0, 255]);
+    }
+
+    #[test]
+    fn crops_regions_larger_than_the_source() {
+        let (mut store, _canvas, context) = setup();
+        let pixels = [9u8, 0, 0, 255, 8, 0, 0, 255];
+        let source = ImageSource {
+            width: 2,
+            height: 1,
+            data: &pixels,
+        };
+        store.draw_image(context, source, 1.0, 0.0, 8.0, 1.0, 0.0, 0.0, 8.0, 1.0);
+        let read = store.get_image_data(context, 0, 0, 8, 1);
+        assert_eq!(&read[..4], &[8, 0, 0, 255]);
+        assert_eq!(&read[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn crops_regions_that_start_before_the_source() {
+        let (mut store, _canvas, context) = setup();
+        let pixels = [7u8, 0, 0, 255, 6, 0, 0, 255];
+        let source = ImageSource {
+            width: 2,
+            height: 1,
+            data: &pixels,
+        };
+        store.draw_image(context, source, -1.0, 0.0, 2.0, 1.0, 0.0, 0.0, 2.0, 1.0);
+        let read = store.get_image_data(context, 0, 0, 2, 1);
+        assert_eq!(&read[..4], &[0, 0, 0, 0]);
+        assert_eq!(&read[4..], &[7, 0, 0, 255]);
     }
 }

@@ -81,6 +81,25 @@ node cli/src/index.mjs doctor
 The host binary is found with `--host`, `KAPLAY_NATIVE_HOST`, next to the CLI,
 or on `PATH`.
 
+## Running a bundled game
+
+Games built with a bundler (Vite, esbuild, TypeScript) can be turned into a
+native bundle without changing the project:
+
+```sh
+node integrations/vite-game/build.mjs --root path/to/game/client --out build/game/game.js
+kaplay-native-host --script build/game/game.js --dir path/to/game/client/public --window 1280x720
+```
+
+The bundle inlines the game and KAPLAY into one classic script, so no module
+loader is involved. Assets keep loading from `--dir` (or a `.pak`), which means
+no URL rewriting is needed. Vite virtual modules are stubbed (`virtual:pwa-register`,
+atlas manifests, devtools); use `--virtual name=file` and `--define K=value` to
+override them per project.
+
+Games that talk to a server over HTTP or WebSockets cannot connect yet: network
+transports are not implemented.
+
 ## Steam
 
 Steam support never bundles or links the Steamworks redistributables. The host

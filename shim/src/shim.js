@@ -458,6 +458,8 @@
 
     class HTMLCanvasElement {
         constructor() {
+            this.tagName = "CANVAS";
+            this.nodeName = "CANVAS";
             this.__id = native.canvas.create(1, 1);
             this.__width = 1;
             this.__height = 1;
@@ -1296,12 +1298,288 @@
     const objectURLs = new Map();
     let nextObjectURL = 1;
 
-    class URLClass {
-        constructor(url) {
-            this.href = String(url);
+    function randomBytes(length) {
+        const bytes = new Uint8Array(length);
+        for (let i = 0; i < length; i++) bytes[i] = Math.floor(Math.random() * 256);
+        return bytes;
+    }
+
+    const crypto = {
+        getRandomValues(view) {
+            const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+            for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+            return view;
+        },
+        randomUUID() {
+            const bytes = randomBytes(16);
+            bytes[6] = (bytes[6] & 0x0f) | 0x40;
+            bytes[8] = (bytes[8] & 0x3f) | 0x80;
+            let hex = "";
+            for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+            return (
+                hex.slice(0, 8) +
+                "-" +
+                hex.slice(8, 12) +
+                "-" +
+                hex.slice(12, 16) +
+                "-" +
+                hex.slice(16, 20) +
+                "-" +
+                hex.slice(20)
+            );
+        },
+    };
+
+    function formDecode(value) {
+        try {
+            return decodeURIComponent(value.replace(/\+/g, "%20"));
+        } catch {
+            return value;
+        }
+    }
+
+    function formEncode(value) {
+        return encodeURIComponent(String(value))
+            .replace(/%20/g, "+")
+            .replace(/[!'()~]/g, (character) => "%" + character.charCodeAt(0).toString(16).toUpperCase());
+    }
+
+    class URLSearchParams {
+        constructor(init) {
+            this.__entries = [];
+            if (init === undefined || init === null) return;
+            if (typeof init === "string") {
+                const text = init.replace(/^\?/, "");
+                if (text === "") return;
+                for (const pair of text.split("&")) {
+                    if (pair === "") continue;
+                    const separator = pair.indexOf("=");
+                    const key = separator === -1 ? pair : pair.slice(0, separator);
+                    const value = separator === -1 ? "" : pair.slice(separator + 1);
+                    this.__entries.push([formDecode(key), formDecode(value)]);
+                }
+                return;
+            }
+            if (init instanceof URLSearchParams) {
+                this.__entries = init.__entries.map((entry) => entry.slice());
+                return;
+            }
+            if (typeof init[Symbol.iterator] === "function") {
+                for (const pair of init) {
+                    if (pair === null || pair === undefined) continue;
+                    this.__entries.push([
+                        String(pair[0]),
+                        pair[1] === null || pair[1] === undefined ? "" : String(pair[1]),
+                    ]);
+                }
+                return;
+            }
+            for (const key of Object.keys(init)) {
+                this.__entries.push([key, String(init[key])]);
+            }
+        }
+
+        get size() {
+            return this.__entries.length;
+        }
+
+        append(key, value) {
+            this.__entries.push([String(key), String(value)]);
+        }
+
+        delete(key) {
+            const name = String(key);
+            this.__entries = this.__entries.filter((entry) => entry[0] !== name);
+        }
+
+        get(key) {
+            const name = String(key);
+            const found = this.__entries.find((entry) => entry[0] === name);
+            return found ? found[1] : null;
+        }
+
+        getAll(key) {
+            const name = String(key);
+            return this.__entries.filter((entry) => entry[0] === name).map((entry) => entry[1]);
+        }
+
+        has(key, value) {
+            const name = String(key);
+            if (arguments.length < 2) {
+                return this.__entries.some((entry) => entry[0] === name);
+            }
+            const text = String(value);
+            return this.__entries.some((entry) => entry[0] === name && entry[1] === text);
+        }
+
+        set(key, value) {
+            const name = String(key);
+            const text = String(value);
+            const index = this.__entries.findIndex((entry) => entry[0] === name);
+            this.__entries = this.__entries.filter((entry) => entry[0] !== name);
+            if (index === -1) this.__entries.push([name, text]);
+            else this.__entries.splice(index, 0, [name, text]);
+        }
+
+        sort() {
+            this.__entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
         }
 
         toString() {
+            return this.__entries
+                .map((entry) => formEncode(entry[0]) + "=" + formEncode(entry[1]))
+                .join("&");
+        }
+
+        forEach(callback, thisArg) {
+            for (const entry of this.__entries.map((pair) => pair.slice())) {
+                callback.call(thisArg, entry[1], entry[0], this);
+            }
+        }
+
+        entries() {
+            return this.__entries.map((entry) => entry.slice())[Symbol.iterator]();
+        }
+
+        keys() {
+            return this.__entries.map((entry) => entry[0])[Symbol.iterator]();
+        }
+
+        values() {
+            return this.__entries.map((entry) => entry[1])[Symbol.iterator]();
+        }
+
+        [Symbol.iterator]() {
+            return this.entries();
+        }
+    }
+
+    function normalizePathname(pathname) {
+        const parts = [];
+        for (const part of pathname.split("/")) {
+            if (part === "" || part === ".") continue;
+            if (part === "..") {
+                parts.pop();
+                continue;
+            }
+            parts.push(part);
+        }
+        const trailing = pathname.endsWith("/") && parts.length > 0;
+        return "/" + parts.join("/") + (trailing ? "/" : "");
+    }
+
+    function parseURL(input, base) {
+        let text = String(input).trim();
+        if (base !== undefined && !/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(text)) {
+            const baseUrl = parseURL(base, undefined);
+            if (!baseUrl) return null;
+            const origin = baseUrl.protocol + "//" + baseUrl.host;
+            if (text.startsWith("//")) {
+                text = baseUrl.protocol + text;
+            } else if (text.startsWith("/")) {
+                text = origin + text;
+            } else if (text.startsWith("?")) {
+                text = origin + baseUrl.pathname + text;
+            } else if (text.startsWith("#")) {
+                text = origin + baseUrl.pathname + baseUrl.search + text;
+            } else {
+                const directory = baseUrl.pathname.slice(0, baseUrl.pathname.lastIndexOf("/") + 1);
+                text = origin + directory + text;
+            }
+        }
+        const scheme = /^([a-zA-Z][a-zA-Z0-9+.\-]*):/.exec(text);
+        if (!scheme) return null;
+        const protocol = scheme[1].toLowerCase() + ":";
+        let rest = text.slice(scheme[0].length);
+        const hasAuthority = rest.startsWith("//");
+        let authority = "";
+        if (hasAuthority) {
+            rest = rest.slice(2);
+            const end = rest.search(/[/?#]/);
+            authority = end === -1 ? rest : rest.slice(0, end);
+            rest = end === -1 ? "" : rest.slice(end);
+        }
+        let hash = "";
+        const hashStart = rest.indexOf("#");
+        if (hashStart !== -1) {
+            hash = rest.slice(hashStart);
+            rest = rest.slice(0, hashStart);
+        }
+        let search = "";
+        const searchStart = rest.indexOf("?");
+        if (searchStart !== -1) {
+            search = rest.slice(searchStart);
+            rest = rest.slice(0, searchStart);
+        }
+        let username = "";
+        let password = "";
+        let hostname = "";
+        let port = "";
+        if (hasAuthority) {
+            let host = authority;
+            const at = host.lastIndexOf("@");
+            if (at !== -1) {
+                const credentials = host.slice(0, at).split(":");
+                username = credentials[0] ?? "";
+                password = credentials[1] ?? "";
+                host = host.slice(at + 1);
+            }
+            const colon = host.lastIndexOf(":");
+            if (colon !== -1 && /^[0-9]*$/.test(host.slice(colon + 1))) {
+                hostname = host.slice(0, colon).toLowerCase();
+                port = host.slice(colon + 1);
+            } else {
+                hostname = host.toLowerCase();
+            }
+        }
+        const host = port === "" ? hostname : hostname + ":" + port;
+        const pathname = hasAuthority ? normalizePathname(rest === "" ? "/" : rest) : rest;
+        const credentials = username === "" ? "" : username + (password === "" ? "" : ":" + password) + "@";
+        const href = protocol + (hasAuthority ? "//" + credentials + host : "") + pathname + search + hash;
+        return {
+            href,
+            protocol,
+            username,
+            password,
+            host,
+            hostname,
+            port,
+            pathname,
+            search,
+            hash,
+            origin: hasAuthority ? protocol + "//" + host : "null",
+        };
+    }
+
+    class URL {
+        constructor(input, base) {
+            const parsed = parseURL(
+                input,
+                base === undefined ? undefined : base instanceof URL ? base.href : String(base),
+            );
+            if (!parsed) throw new TypeError("Invalid URL: " + input);
+            this.href = parsed.href;
+            this.protocol = parsed.protocol;
+            this.username = parsed.username;
+            this.password = parsed.password;
+            this.host = parsed.host;
+            this.hostname = parsed.hostname;
+            this.port = parsed.port;
+            this.pathname = parsed.pathname;
+            this.search = parsed.search;
+            this.hash = parsed.hash;
+            this.origin = parsed.origin;
+        }
+
+        get searchParams() {
+            return new URLSearchParams(this.search);
+        }
+
+        toString() {
+            return this.href;
+        }
+
+        toJSON() {
             return this.href;
         }
 
@@ -1678,43 +1956,278 @@
 
     // -------------------------------------------------------------------- dom
 
-    const documentElement = {
-        style: makeStyle(),
-        appendChild(child) {
-            if (child instanceof HTMLCanvasElement) child.__parent = documentElement;
-            return child;
-        },
-        getBoundingClientRect() {
-            return { x: 0, y: 0, left: 0, top: 0, width: screen.width, height: screen.height };
+    const createdElements = new Set();
 
-        },
-    };
+    function registerElement(element) {
+        createdElements.add(element);
+        return element;
+    }
 
-    const body = {
-        style: makeStyle(),
-        appendChild(child) {
+    function isAttached(element) {
+        let node = element;
+        while (node) {
+            if (node === body || node === documentElement || node === head) return true;
+            node = node instanceof HTMLCanvasElement ? node.__parent : node.parentElement;
+        }
+        return false;
+    }
+
+    class TextNode {
+        constructor(text) {
+            this.nodeType = 3;
+            this.textContent = String(text);
+        }
+    }
+
+    class HTMLElement {
+        constructor(tagName) {
+            this.tagName = String(tagName).toUpperCase();
+            this.nodeName = this.tagName;
+            this.id = "";
+            this.className = "";
+            this.textContent = "";
+            this.innerHTML = "";
+            this.value = "";
+            this.checked = false;
+            this.disabled = false;
+            this.type = "";
+            this.name = "";
+            this.placeholder = "";
+            this.maxLength = -1;
+            this.pattern = "";
+            this.noValidate = false;
+            this.isConnected = true;
+            this.children = [];
+            this.parentElement = null;
+            this.style = makeStyle();
+            this.__listeners = new Map();
+            this.__attributes = new Map();
+        }
+
+        setAttribute(name, value) {
+            const key = String(name);
+            this.__attributes.set(key, String(value));
+            if (key === "id") this.id = String(value);
+            if (key === "class") this.className = String(value);
+        }
+
+        getAttribute(name) {
+            const key = String(name);
+            return this.__attributes.has(key) ? this.__attributes.get(key) : null;
+        }
+
+        hasAttribute(name) {
+            return this.__attributes.has(String(name));
+        }
+
+        removeAttribute(name) {
+            this.__attributes.delete(String(name));
+        }
+
+        __adopt(child) {
+            if (!child || typeof child !== "object") return;
+            const current = child instanceof HTMLCanvasElement ? child.__parent : child.parentElement;
+            if (current && typeof current.removeChild === "function") current.removeChild(child);
             if (child instanceof HTMLCanvasElement) {
-                child.__parent = body;
-                mainCanvas = child;
+                child.__parent = this;
+                if (this.tagName === "BODY") mainCanvas = child;
+            } else {
+                child.parentElement = this;
             }
+        }
+
+        appendChild(child) {
+            if (!child) return child;
+            this.__adopt(child);
+            this.children.push(child);
             return child;
-        },
-        get offsetWidth() {
-            return screen.width;
-        },
-        get offsetHeight() {
-            return screen.height;
-        },
+        }
+
+        append(...nodes) {
+            for (const node of nodes) {
+                this.appendChild(node instanceof TextNode || typeof node !== "string" ? node : new TextNode(node));
+            }
+        }
+
+        prepend(...nodes) {
+            const added = [];
+            for (const node of nodes) {
+                if (!node) continue;
+                this.__adopt(node);
+                added.push(node);
+            }
+            this.children.unshift(...added);
+        }
+
+        insertBefore(child, reference) {
+            if (!child) return child;
+            const index = reference ? this.children.indexOf(reference) : -1;
+            this.__adopt(child);
+            if (index < 0) this.children.push(child);
+            else this.children.splice(index, 0, child);
+            return child;
+        }
+
+        removeChild(child) {
+            const index = this.children.indexOf(child);
+            if (index >= 0) this.children.splice(index, 1);
+            if (child instanceof HTMLCanvasElement) child.__parent = null;
+            else if (child) child.parentElement = null;
+            return child;
+        }
+
+        remove() {
+            if (this.parentElement) this.parentElement.removeChild(this);
+        }
+
+        contains(node) {
+            return this.children.includes(node);
+        }
+
+        focus() {
+            document.activeElement = this;
+        }
+
+        blur() {
+            if (document.activeElement === this) document.activeElement = null;
+        }
+
+        select() {}
+
+        click() {
+            this.__emit("click", makeEvent("click", {}));
+        }
+
         getBoundingClientRect() {
-            return { x: 0, y: 0, left: 0, top: 0, width: screen.width, height: screen.height };
-        },
+            return {
+                x: 0,
+                y: 0,
+                left: 0,
+                top: 0,
+                right: screen.width,
+                bottom: screen.height,
+                width: screen.width,
+                height: screen.height,
+            };
+        }
+
         addEventListener(type, fn) {
-            documentListeners.add(type, fn);
-        },
+            const key = String(type);
+            const list = this.__listeners.get(key);
+            if (list) list.push(fn);
+            else this.__listeners.set(key, [fn]);
+        }
+
         removeEventListener(type, fn) {
-            documentListeners.remove(type, fn);
-        },
-    };
+            const list = this.__listeners.get(String(type));
+            if (!list) return;
+            const index = list.indexOf(fn);
+            if (index >= 0) list.splice(index, 1);
+        }
+
+        dispatchEvent(event) {
+            this.__emit(event && event.type ? event.type : String(event), event);
+            return true;
+        }
+
+        __emit(type, event) {
+            const list = this.__listeners.get(String(type));
+            if (!list) return;
+            for (const fn of list.slice()) {
+                try {
+                    fn.call(this, event);
+                } catch (error) {
+                    reportError(error);
+                }
+            }
+        }
+    }
+
+    class HTMLInputElement extends HTMLElement {}
+    class HTMLTextAreaElement extends HTMLElement {}
+    class HTMLFormElement extends HTMLElement {}
+
+    class Event {
+        constructor(type, init) {
+            const options = init || {};
+            this.type = String(type);
+            this.bubbles = Boolean(options.bubbles);
+            this.cancelable = Boolean(options.cancelable);
+            this.defaultPrevented = false;
+            this.target = null;
+            this.currentTarget = null;
+        }
+
+        preventDefault() {
+            this.defaultPrevented = true;
+        }
+
+        stopPropagation() {}
+
+        stopImmediatePropagation() {}
+    }
+
+    class MouseEvent extends Event {
+        constructor(type, init) {
+            super(type, init);
+            const options = init || {};
+            this.clientX = Number(options.clientX || 0);
+            this.clientY = Number(options.clientY || 0);
+            this.screenX = Number(options.screenX || 0);
+            this.screenY = Number(options.screenY || 0);
+            this.movementX = Number(options.movementX || 0);
+            this.movementY = Number(options.movementY || 0);
+            this.button = Number(options.button || 0);
+            this.buttons = Number(options.buttons || 0);
+            this.offsetX = Number(options.offsetX || 0);
+            this.offsetY = Number(options.offsetY || 0);
+        }
+    }
+
+    class KeyboardEvent extends Event {
+        constructor(type, init) {
+            super(type, init);
+            const options = init || {};
+            this.key = options.key === undefined ? "" : String(options.key);
+            this.code = options.code === undefined ? "" : String(options.code);
+            this.repeat = Boolean(options.repeat);
+            this.ctrlKey = Boolean(options.ctrlKey);
+            this.shiftKey = Boolean(options.shiftKey);
+            this.altKey = Boolean(options.altKey);
+            this.metaKey = Boolean(options.metaKey);
+        }
+    }
+
+    class WheelEvent extends MouseEvent {
+        constructor(type, init) {
+            super(type, init);
+            const options = init || {};
+            this.deltaX = Number(options.deltaX || 0);
+            this.deltaY = Number(options.deltaY || 0);
+            this.deltaZ = Number(options.deltaZ || 0);
+            this.deltaMode = Number(options.deltaMode || 0);
+        }
+    }
+
+    class CustomEvent extends Event {
+        constructor(type, init) {
+            super(type, init);
+            this.detail = init ? init.detail : undefined;
+        }
+    }
+
+    const documentElement = new HTMLElement("html");
+    const body = new HTMLElement("body");
+    const head = new HTMLElement("head");
+
+    Object.defineProperty(body, "offsetWidth", {
+        get: () => screen.width,
+        configurable: true,
+    });
+    Object.defineProperty(body, "offsetHeight", {
+        get: () => screen.height,
+        configurable: true,
+    });
 
     let mainCanvas = null;
 
@@ -1783,7 +2296,9 @@
 
     const document = {
         body,
+        head,
         documentElement,
+        title: "",
         visibilityState: "visible",
         activeElement: null,
         fullscreenElement: null,
@@ -1808,15 +2323,51 @@
             },
         },
         createElement(tag) {
-            if (String(tag).toLowerCase() === "canvas") return new HTMLCanvasElement();
-            return { style: makeStyle(), addEventListener() {}, removeEventListener() {} };
+            const name = String(tag).toLowerCase();
+            if (name === "canvas") return registerElement(new HTMLCanvasElement());
+            if (name === "input") return registerElement(new HTMLInputElement(name));
+            if (name === "textarea") return registerElement(new HTMLTextAreaElement(name));
+            if (name === "form") return registerElement(new HTMLFormElement(name));
+            return registerElement(new HTMLElement(name));
         },
         createElementNS(_namespace, tag) {
             return document.createElement(tag);
         },
-        querySelector(selector) {
-            if (mainCanvas && String(selector).startsWith("#")) return mainCanvas;
+        createTextNode(text) {
+            return new TextNode(text);
+        },
+        getElementById(id) {
+            const key = String(id);
+            for (const element of createdElements) {
+                if (element.id === key && isAttached(element)) return element;
+            }
             return null;
+        },
+        getElementsByTagName(name) {
+            const tag = String(name).toLowerCase();
+            const matches = [];
+            for (const element of createdElements) {
+                if (element.tagName.toLowerCase() === tag && isAttached(element)) matches.push(element);
+            }
+            if (tag === "canvas" && mainCanvas) {
+                return [mainCanvas].concat(matches.filter((element) => element !== mainCanvas));
+            }
+            return matches;
+        },
+        getElementsByClassName(name) {
+            const wanted = String(name);
+            return Array.from(createdElements).filter((element) =>
+                String(element.className).split(/\s+/).includes(wanted),
+            );
+        },
+        querySelector(selector) {
+            const value = String(selector);
+            if (value.startsWith("#")) return document.getElementById(value.slice(1));
+            if (value === "canvas") return mainCanvas;
+            return null;
+        },
+        querySelectorAll() {
+            return [];
         },
         exitPointerLock() {
             native.window.setCursorLocked(false);
@@ -1899,6 +2450,7 @@
             return [];
         },
         maxTouchPoints: 0,
+        onLine: true,
         vibrate() {
             return false;
         },
@@ -1913,9 +2465,16 @@
         pathname: "/",
         search: "",
         hash: "",
+        username: "",
+        password: "",
+        port: "",
+        get searchParams() {
+            return new URLSearchParams(this.search);
+        },
         toString() {
             return this.href;
         },
+        reload() {},
     };
 
     function makeResponse(bytes, url) {
@@ -2017,9 +2576,11 @@
     const define = (name, value) => {
         try {
             Object.defineProperty(global, name, { value, writable: true, configurable: true });
-        } catch {
+            return;
+        } catch {}
+        try {
             global[name] = value;
-        }
+        } catch {}
     };
     define("window", global);
     define("kaplayNative", kaplayNative);
@@ -2032,7 +2593,21 @@
     define("Image", Image);
     define("ImageData", ImageData);
     define("Blob", Blob);
-    global.URL = URLClass;
+    define("URL", URL);
+    define("crypto", crypto);
+    define("URLSearchParams", URLSearchParams);
+    global.matchMedia = (query) => ({
+        matches: false,
+        media: String(query),
+        onchange: null,
+        addEventListener() {},
+        removeEventListener() {},
+        addListener() {},
+        removeListener() {},
+        dispatchEvent() {
+            return false;
+        },
+    });
     define("FontFace", FontFace);
     global.Audio = HTMLAudioElement;
     define("AudioBuffer", AudioBuffer);
@@ -2040,6 +2615,15 @@
     global.webkitAudioContext = AudioContext;
     define("ResizeObserver", ResizeObserver);
     define("HTMLCanvasElement", HTMLCanvasElement);
+    define("HTMLElement", HTMLElement);
+    define("HTMLInputElement", HTMLInputElement);
+    define("HTMLTextAreaElement", HTMLTextAreaElement);
+    define("HTMLFormElement", HTMLFormElement);
+    define("Event", Event);
+    define("MouseEvent", MouseEvent);
+    define("KeyboardEvent", KeyboardEvent);
+    define("WheelEvent", WheelEvent);
+    define("CustomEvent", CustomEvent);
     define("TextEncoder", TextEncoder);
     define("TextDecoder", TextDecoder);
     global.fetch = fetchResource;

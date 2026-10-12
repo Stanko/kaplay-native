@@ -12,12 +12,23 @@ missing.
 - `TextEncoder` and `TextDecoder` (UTF-8) are shimmed because QuickJS does not
   provide them.
 - `Promise.withResolvers` is polyfilled.
+- `URL` and `URLSearchParams` are implemented, including base resolution and
+  form encoding, because SDKs parse their endpoint URLs at import time.
+- `crypto.getRandomValues` and `crypto.randomUUID` are backed by `Math.random`,
+  which is fine for gameplay identifiers but not for secrets.
+- `matchMedia` returns a non-matching media query list, so pointer-capability
+  checks report a desktop.
 - `Intl` is not available. KAPLAY falls back to a code-point splitter in
   `runes.ts`, so text still works, but locale-aware segmentation does not.
 
 ## DOM and events
 
-- `document`, `document.body`, `document.documentElement`
+- `document`, `document.head`, `document.body`, `document.documentElement`
+- `createElement`, `createTextNode`, `getElementById`, `getElementsByTagName`,
+  `getElementsByClassName`, `querySelector`, `appendChild`, `prepend`,
+  `removeChild`, `insertBefore`, `setAttribute` for `div`, `input`, `textarea`,
+  and `form` elements
+- `Event`, `MouseEvent`, `KeyboardEvent`, `WheelEvent`, and `CustomEvent`
 - canvas creation, `appendChild`, `getBoundingClientRect`, style subset
   (`width`, `height`, `cssText`, `cursor`)
 - `document.activeElement`, `focus()`, `blur()`
@@ -48,9 +59,14 @@ does not throw.
 
 The full surface KAPLAY uses: textures, buffers, shaders and programs,
 uniforms, vertex attributes, framebuffer and renderbuffer objects, state
-toggles, `readPixels`, and `getExtension("WEBGL_lose_context")`. The context is
-backed by a desktop GL 2.1 compatibility profile, so shaders are translated as
-described in [architecture.md](architecture.md).
+toggles, `readPixels`, and `getExtension("WEBGL_lose_context")`.
+
+The context is desktop OpenGL. Shaders are translated from GLSL ES 1.00 for
+both compatibility profiles (`#version 120`) and core profiles (`#version 150
+core` with `in`/`out` and a declared fragment output); the profile is detected
+from the context, and core profiles get a default vertex array object because
+one is required there. macOS always yields a core profile through glutin, so
+that path is exercised by CI on every run.
 
 `getExtension` returns `null` for every other extension, `getError` always
 returns `NO_ERROR`, and `isContextLost` returns `false`.
@@ -72,11 +88,12 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
 
 ## Platforms
 
-The GL path targets OpenGL 2.1 compatibility profiles everywhere: desktop GL
-on Windows and Linux, legacy OpenGL on macOS. On Linux, X11 and Wayland are
+The GL path targets desktop OpenGL everywhere: compatibility contexts on
+Windows and Linux, and the core profile on macOS. On Linux, X11 and Wayland are
 supported through winit and glutin; `--x11` forces the X11 backend for
 environments where the Wayland path is unavailable (for example, software
-rendering in CI).
+rendering in CI). The CI matrix builds, tests, and renders on Linux, macOS, and
+Windows.
 
 ## Verification story
 

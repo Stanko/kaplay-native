@@ -42,6 +42,7 @@ pub struct GlState {
     textures: HashMap<u32, glow::Texture>,
     buffers: HashMap<u32, glow::Buffer>,
     shaders: HashMap<u32, glow::Shader>,
+    shader_types: HashMap<u32, u32>,
     programs: HashMap<u32, glow::Program>,
     framebuffers: HashMap<u32, glow::Framebuffer>,
     renderbuffers: HashMap<u32, glow::Renderbuffer>,
@@ -51,6 +52,8 @@ pub struct GlState {
     premultiply: bool,
     attribs: HashMap<u32, AttribPointer>,
     array_buffer: Option<u32>,
+    profile: shader::Profile,
+    vertex_array: Option<glow::VertexArray>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -64,8 +67,25 @@ struct AttribPointer {
     offset: i32,
 }
 
+fn detect_profile(gl: &glow::Context) -> shader::Profile {
+    let version = unsafe { gl.get_parameter_string(glow::VERSION) };
+    let mut parts = version
+        .split(['.', ' '])
+        .filter_map(|part| part.parse::<u32>().ok());
+    let major = parts.next().unwrap_or(2);
+    let minor = parts.next().unwrap_or(1);
+    if (major, minor) >= (3, 2) {
+        let mask = unsafe { gl.get_parameter_i32(glow::CONTEXT_PROFILE_MASK) } as u32;
+        if mask & glow::CONTEXT_CORE_PROFILE_BIT != 0 {
+            return shader::Profile::Core;
+        }
+    }
+    shader::Profile::Compatibility
+}
+
 impl GlState {
     pub fn new(gl: glow::Context) -> Self {
+        let profile = detect_profile(&gl);
         let mut state = Self {
             gl,
             width: 1,
@@ -76,6 +96,7 @@ impl GlState {
             textures: HashMap::new(),
             buffers: HashMap::new(),
             shaders: HashMap::new(),
+            shader_types: HashMap::new(),
             programs: HashMap::new(),
             framebuffers: HashMap::new(),
             renderbuffers: HashMap::new(),
@@ -85,7 +106,17 @@ impl GlState {
             premultiply: false,
             attribs: HashMap::new(),
             array_buffer: None,
+            profile,
+            vertex_array: None,
         };
+        if profile == shader::Profile::Core {
+            state.vertex_array = unsafe { state.gl.create_vertex_array().ok() };
+            if let Some(vertex_array) = state.vertex_array {
+                unsafe { state.gl.bind_vertex_array(Some(vertex_array)) };
+            } else {
+                log::error!("failed to create the core profile vertex array");
+            }
+        }
         state.blit = state.create_blit();
         state
     }
@@ -110,10 +141,17 @@ impl GlState {
             let gl = &self.gl;
             let program = gl.create_program().ok()?;
             let vert = gl.create_shader(VERTEX_SHADER).ok()?;
-            gl.shader_source(vert, BLIT_VERT);
+            let vertex_source = shader::translate(BLIT_VERT, shader::Stage::Vertex, self.profile)
+                .map_err(|error| log::error!("blit vertex shader: {error}"))
+                .ok()?;
+            gl.shader_source(vert, &vertex_source);
             gl.compile_shader(vert);
             let frag = gl.create_shader(FRAGMENT_SHADER).ok()?;
-            gl.shader_source(frag, BLIT_FRAG);
+            let fragment_source =
+                shader::translate(BLIT_FRAG, shader::Stage::Fragment, self.profile)
+                    .map_err(|error| log::error!("blit fragment shader: {error}"))
+                    .ok()?;
+            gl.shader_source(frag, &fragment_source);
             gl.compile_shader(frag);
             gl.attach_shader(program, vert);
             gl.attach_shader(program, frag);
@@ -623,10 +661,13 @@ impl GlState {
 
     pub fn create_shader(&mut self, kind: u32) -> Option<u32> {
         let shader = unsafe { self.gl.create_shader(kind) }.ok()?;
-        Some(self.insert(shader, |state| &mut state.shaders))
+        let handle = self.insert(shader, |state| &mut state.shaders);
+        self.shader_types.insert(handle, kind);
+        Some(handle)
     }
 
     pub fn delete_shader(&mut self, handle: u32) {
+        self.shader_types.remove(&handle);
         self.shader_logs.remove(&handle);
         if let Some(shader) = self.shaders.remove(&handle) {
             unsafe { self.gl.delete_shader(shader) };
@@ -639,7 +680,11 @@ impl GlState {
             .get(&handle)
             .copied()
             .ok_or_else(|| format!("unknown shader {handle}"))?;
-        match shader::translate(source) {
+        let stage = match self.shader_types.get(&handle) {
+            Some(&kind) if kind == glow::FRAGMENT_SHADER => shader::Stage::Fragment,
+            _ => shader::Stage::Vertex,
+        };
+        match shader::translate(source, stage, self.profile) {
             Ok(translated) => {
                 self.shader_logs.remove(&handle);
                 unsafe { self.gl.shader_source(shader, &translated) };
@@ -883,7 +928,12 @@ mod tests {
     #[test]
     fn translates_single_line_shaders() {
         let source = "precision mediump float;varying vec2 v;void main(){gl_FragColor=vec4(1.0);}";
-        let translated = shader::translate(source).unwrap();
+        let translated = shader::translate(
+            source,
+            shader::Stage::Vertex,
+            shader::Profile::Compatibility,
+        )
+        .unwrap();
         assert!(!translated.contains("precision"));
         assert!(translated.contains("gl_FragColor"));
     }
@@ -891,7 +941,12 @@ mod tests {
     #[test]
     fn removes_version_100() {
         let source = "#version 100\nattribute vec2 a;void main(){gl_Position=vec4(a,0.0,1.0);}";
-        let translated = shader::translate(source).unwrap();
+        let translated = shader::translate(
+            source,
+            shader::Stage::Vertex,
+            shader::Profile::Compatibility,
+        )
+        .unwrap();
         assert!(translated.starts_with("#version 120\n"));
         assert_eq!(translated.matches("#version").count(), 1);
         assert!(translated.contains("attribute vec2 a"));
@@ -899,6 +954,11 @@ mod tests {
 
     #[test]
     fn rejects_es3_shaders() {
-        assert!(shader::translate("#version 300 es\nvoid main(){}").is_err());
+        assert!(shader::translate(
+            "#version 300 es\nvoid main(){}",
+            shader::Stage::Vertex,
+            shader::Profile::Core
+        )
+        .is_err());
     }
 }

@@ -372,3 +372,113 @@ test("the platform namespace exposes steam", () => {
     assert.ok(stub.calls.some((entry) => entry.name === "steam.runCallbacks"));
     assert.ok(stub.calls.some((entry) => entry.name === "steam.setStatInt" && entry.args[1] === 3));
 });
+
+test("url and search params follow the web api", () => {
+    const parsed = new URL("/colyseus?x=1&y=a+b", "ws://127.0.0.1:2567");
+    assert.equal(parsed.protocol, "ws:");
+    assert.equal(parsed.hostname, "127.0.0.1");
+    assert.equal(parsed.port, "2567");
+    assert.equal(parsed.pathname, "/colyseus");
+    assert.equal(parsed.search, "?x=1&y=a+b");
+    assert.equal(parsed.href, "ws://127.0.0.1:2567/colyseus?x=1&y=a+b");
+    assert.equal(parsed.searchParams.get("y"), "a b");
+    assert.equal(parsed.toString(), parsed.href);
+
+    const relative = new URL("../other", "wss://example.com:8443/a/b/c");
+    assert.equal(relative.href, "wss://example.com:8443/a/other");
+    const schemeRelative = new URL("//cdn.example.com/x", "https://example.com");
+    assert.equal(schemeRelative.href, "https://cdn.example.com/x");
+    const samePage = new URL("#frag", "https://example.com/a?b=1");
+    assert.equal(samePage.href, "https://example.com/a?b=1#frag");
+
+    assert.throws(() => new URL("not a url"), TypeError);
+
+    const params = new URLSearchParams("?a=1&a=2&b=%20c");
+    assert.equal(params.getAll("a").join(","), "1,2");
+    assert.equal(params.get("b"), " c");
+    assert.equal(params.has("a"), true);
+    params.set("a", "9");
+    params.append("d", "e f");
+    assert.equal(params.toString(), "a=9&b=+c&d=e+f");
+    params.delete("b");
+    assert.equal(params.toString(), "a=9&d=e+f");
+    assert.equal(new URLSearchParams({ deep: true }).get("deep"), "true");
+    assert.equal(new URLSearchParams([["k", 2]]).get("k"), "2");
+    assert.equal([...params.keys()].join(","), "a,d");
+    assert.equal(params.size, 2);
+});
+
+test("matchMedia reports pointer capabilities", () => {
+    assert.equal(window.matchMedia("(hover: none) and (pointer: coarse)").matches, false);
+    assert.equal(window.matchMedia("(prefers-color-scheme: dark)").media, "(prefers-color-scheme: dark)");
+});
+
+test("location exposes the fields sdk clients parse", () => {
+    assert.equal(location.protocol, "kaplay-native:");
+    assert.equal(location.hostname, "game");
+    assert.equal(location.port, "");
+    assert.equal(location.searchParams.get("solo"), null);
+});
+
+test("crypto fills typed arrays and mints uuids", () => {
+    const bytes = new Uint8Array(16);
+    assert.equal(crypto.getRandomValues(bytes), bytes);
+    assert.ok(bytes.some((value) => value !== 0));
+
+    const uuid = crypto.randomUUID();
+    assert.match(uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.notEqual(crypto.randomUUID(), uuid);
+
+    const words = new Uint32Array(2);
+    crypto.getRandomValues(words);
+    assert.equal(words.length, 2);
+});
+
+test("dom elements support lookup, nesting, and input classes", () => {
+    const banner = document.createElement("div");
+    banner.id = "offline-banner";
+    banner.textContent = "offline";
+    Object.assign(banner.style, { position: "fixed", display: "none" });
+    document.body.prepend(banner);
+
+    assert.equal(document.getElementById("offline-banner"), banner);
+    assert.equal(document.querySelector("#offline-banner"), banner);
+    assert.equal(banner.parentElement, document.body);
+    assert.equal(banner.style.display, "none");
+    assert.equal(banner.style.cssText.includes("position: fixed"), true);
+
+    const input = document.createElement("input");
+    assert.ok(input instanceof HTMLInputElement);
+    assert.ok(input instanceof HTMLElement);
+    input.type = "password";
+    input.setAttribute("autocomplete", "off");
+    assert.equal(input.getAttribute("autocomplete"), "off");
+    input.value = "hunter2";
+    let seen = null;
+    input.addEventListener("input", () => {
+        seen = input.value;
+    });
+    input.dispatchEvent(new Event("input"));
+    assert.equal(seen, "hunter2");
+    assert.equal(document.getElementsByTagName("input").includes(input), false);
+
+    const form = document.createElement("form");
+    form.noValidate = true;
+    form.addEventListener("submit", (event) => event.preventDefault());
+    document.body.prepend(form);
+    form.appendChild(input);
+    assert.equal(input.parentElement, form);
+    assert.equal(form.children[0], input);
+    assert.ok(document.getElementsByTagName("input").includes(input));
+
+    const event = new MouseEvent("mousemove", { clientX: 5, clientY: 6 });
+    assert.equal(event.type, "mousemove");
+    assert.equal(event.clientX, 5);
+    document.body.dispatchEvent(event);
+
+    input.remove();
+    banner.remove();
+    assert.equal(document.getElementById("offline-banner"), null);
+    assert.equal(banner.parentElement, null);
+    assert.equal(form.children.length, 0);
+});
