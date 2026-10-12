@@ -12,6 +12,7 @@ pub struct HostConfig {
     pub headless: bool,
     pub frames: Option<u32>,
     pub screenshot: Option<PathBuf>,
+    pub screenshot_raw: Option<PathBuf>,
     pub save_dir: PathBuf,
     pub game_name: String,
 }

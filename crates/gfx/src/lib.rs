@@ -892,7 +892,8 @@ mod tests {
     fn removes_version_100() {
         let source = "#version 100\nattribute vec2 a;void main(){gl_Position=vec4(a,0.0,1.0);}";
         let translated = shader::translate(source).unwrap();
-        assert!(!translated.contains("#version"));
+        assert!(translated.starts_with("#version 120\n"));
+        assert_eq!(translated.matches("#version").count(), 1);
         assert!(translated.contains("attribute vec2 a"));
     }
 

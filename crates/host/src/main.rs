@@ -36,6 +36,8 @@ struct Args {
     frames: Option<u32>,
     #[arg(long, help = "Write a PNG of the last frame before exiting")]
     screenshot: Option<PathBuf>,
+    #[arg(long, help = "Write the last frame as raw top-down RGBA bytes")]
+    screenshot_raw: Option<PathBuf>,
     #[arg(long, help = "Directory for the localStorage save file")]
     save_dir: Option<PathBuf>,
     #[arg(long, help = "Allow http(s) requests (disabled by default)")]
@@ -100,6 +102,7 @@ fn main() -> anyhow::Result<()> {
         headless: args.headless,
         frames: args.frames,
         screenshot: args.screenshot,
+        screenshot_raw: args.screenshot_raw,
         save_dir,
         game_name: args.title,
     };

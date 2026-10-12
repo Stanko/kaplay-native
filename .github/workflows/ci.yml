@@ -76,13 +76,15 @@ jobs:
         run: |
           xvfb-run -a target/release/kaplay-native-host \
             --script examples/smoke/main.js --dir examples/smoke \
-            --window 320x240 --frames 5 --no-steam --screenshot smoke.png
+            --window 320x240 --frames 5 --no-steam \
+            --screenshot smoke.png --screenshot-raw smoke.rgba
       - name: Render five frames (macOS)
         if: runner.os == 'macOS'
         run: |
           target/release/kaplay-native-host \
             --script examples/smoke/main.js --dir examples/smoke \
-            --window 320x240 --frames 5 --no-steam --screenshot smoke.png
+            --window 320x240 --frames 5 --no-steam \
+            --screenshot smoke.png --screenshot-raw smoke.rgba
       - name: Render five frames (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -90,7 +92,9 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
         run: |
-          target/release/kaplay-native-host --script examples/smoke/main.js --dir examples/smoke --window 320x240 --frames 5 --no-steam --screenshot smoke.png
+          target/release/kaplay-native-host --script examples/smoke/main.js --dir examples/smoke --window 320x240 --frames 5 --no-steam --screenshot smoke.png --screenshot-raw smoke.rgba
       - name: Check the screenshot
         shell: bash
-        run: test -s smoke.png
+        run: |
+          test -s smoke.png
+          node scripts/check-frame.mjs smoke.rgba 320 240

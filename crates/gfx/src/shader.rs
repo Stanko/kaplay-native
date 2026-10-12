@@ -3,7 +3,7 @@ pub fn translate(source: &str) -> Result<String, String> {
         return Err("GLSL ES 3 shaders are not supported by the native runtime".into());
     }
 
-    let mut output = String::with_capacity(source.len());
+    let mut output = String::from("#version 120\n");
     let mut chars = source.char_indices().peekable();
 
     while let Some((index, character)) = chars.next() {
@@ -62,19 +62,23 @@ mod tests {
     fn strips_precision_statements() {
         let translated =
             translate("precision mediump float;void main(){gl_FragColor=vec4(1.0);}").unwrap();
-        assert_eq!(translated, "void main(){gl_FragColor=vec4(1.0);}");
+        assert_eq!(
+            translated,
+            "#version 120\nvoid main(){gl_FragColor=vec4(1.0);}"
+        );
     }
 
     #[test]
     fn keeps_identifiers_containing_precision() {
         let translated = translate("float precisionValue;").unwrap();
-        assert_eq!(translated, "float precisionValue;");
+        assert_eq!(translated, "#version 120\nfloat precisionValue;");
     }
 
     #[test]
-    fn strips_version_100_lines() {
+    fn requires_a_desktop_version_directive() {
         let translated = translate("#version 100\nattribute vec2 a;").unwrap();
-        assert!(!translated.contains("#version"));
+        assert!(translated.starts_with("#version 120\n"));
+        assert_eq!(translated.matches("#version").count(), 1);
         assert!(translated.contains("attribute vec2 a"));
     }
 

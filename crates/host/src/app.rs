@@ -342,6 +342,16 @@ impl HostApp {
         }
     }
 
+    fn capture_screenshot_raw(&self, path: &std::path::Path) {
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        let (_, _, pixels) = inner.state.gl.borrow_mut().read_default_pixels_top_down();
+        if let Err(error) = std::fs::write(path, pixels) {
+            log::error!("failed to write raw screenshot: {error}");
+        }
+    }
+
     fn maybe_exit(&mut self, event_loop: &ActiveEventLoop) {
         let Some(inner) = self.inner.as_ref() else {
             return;
@@ -351,6 +361,9 @@ impl HostApp {
         if finished {
             if let Some(path) = self.config.screenshot.clone() {
                 self.capture_screenshot(&path);
+            }
+            if let Some(path) = self.config.screenshot_raw.clone() {
+                self.capture_screenshot_raw(&path);
             }
             event_loop.exit();
         }
