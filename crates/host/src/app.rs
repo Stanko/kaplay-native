@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::ffi::{c_char, CStr};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -36,6 +37,7 @@ pub struct HostApp {
     steam: Rc<std::cell::RefCell<Option<SteamApi>>>,
     inner: Option<Inner>,
     frames: u32,
+    failed: bool,
 }
 
 struct Inner {
@@ -105,6 +107,29 @@ impl Inner {
     }
 }
 
+fn gl_version(display: &impl GlDisplay) -> Option<(u32, u32)> {
+    let name = unsafe { CStr::from_bytes_with_nul_unchecked(b"glGetString\0") };
+    let pointer = display.get_proc_address(name);
+    if pointer.is_null() {
+        return None;
+    }
+    let get_string: unsafe extern "C" fn(u32) -> *const c_char =
+        unsafe { std::mem::transmute(pointer) };
+    let value = unsafe { get_string(glow::VERSION) };
+    if value.is_null() {
+        return None;
+    }
+    let text = unsafe { CStr::from_ptr(value) }
+        .to_string_lossy()
+        .into_owned();
+    let mut parts = text
+        .split(['.', ' '])
+        .filter_map(|part| part.parse::<u32>().ok());
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    Some((major, minor))
+}
+
 fn js_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> String {
     let pending: rquickjs::Value = ctx.catch();
     if let Some(exception) = pending.as_exception() {
@@ -139,6 +164,7 @@ impl HostApp {
             steam: Rc::new(std::cell::RefCell::new(steam)),
             inner: None,
             frames: 0,
+            failed: false,
         })
     }
 
@@ -150,6 +176,9 @@ impl HostApp {
             api.shutdown();
         }
         result?;
+        if self.failed {
+            anyhow::bail!("failed to create a window with an OpenGL 2.1 context");
+        }
         Ok(())
     }
 
@@ -192,6 +221,19 @@ impl HostApp {
         let gl_context = not_current.make_current(&surface).ok()?;
         let _ =
             surface.set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
+
+        match gl_version(&display) {
+            Some(version) if version < (2, 1) => {
+                log::error!(
+                    "OpenGL {}.{} is too old, 2.1 or newer is required",
+                    version.0,
+                    version.1
+                );
+                return None;
+            }
+            Some(version) => log::info!("OpenGL {}.{}", version.0, version.1),
+            None => log::warn!("could not determine the OpenGL version"),
+        }
 
         let glow_context = unsafe {
             glow::Context::from_loader_function_cstr(|symbol| {
@@ -322,6 +364,10 @@ impl ApplicationHandler for HostApp {
             return;
         }
         self.inner = self.create(event_loop);
+        if self.inner.is_none() {
+            self.failed = true;
+            event_loop.exit();
+        }
     }
 
     fn window_event(
