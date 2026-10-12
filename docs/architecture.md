@@ -1,0 +1,118 @@
+# Architecture
+
+## Shape of the runtime
+
+KAPLAY Native is a drop-in host, not a fork. The repository contains six
+crates and one JavaScript shim:
+
+| Component | Role |
+| --- | --- |
+| `crates/host` | winit window, glutin GL context, QuickJS runtime, frame loop, bridge |
+| `crates/gfx` | `WebGLRenderingContext` over `glow`: object handles, offscreen default framebuffer, `present()` |
+| `crates/canvas2d` | `CanvasRenderingContext2D` over tiny-skia: text, images, pixel ops |
+| `crates/pak` | asset sources: directories and `.pak` (zip) archives |
+| `crates/steam` | dynamic Steamworks flat API loading |
+| `shim/src/shim.js` | browser semantics: DOM, events, canvas, WebGL wrapper, fetch, storage |
+
+The game never imports a native module. The host installs `__kapNative` (a set
+of nested function objects keyed by numeric handles), evaluates the shim, then
+evaluates the game and the KAPLAY bundle unmodified.
+
+## The bridge
+
+`__kapNative` is the only native surface. Each namespace is a function object:
+
+- `env` - version, platform, game name, `now()`, `log()`, `quit()`
+- `window` - size, title, fullscreen, cursor
+- `fs` - asset reads (`size`, `exists`, `read(path, out)`)
+- `storage` - `localStorage` persistence (`load`, `save`)
+- `image` - decode from bytes or data URLs, dimensions
+- `font` - register font bytes, query families
+- `canvas` - Canvas 2D operations against a native surface id
+- `gl` - WebGL 1 operations against a GL state handle table
+- `steam` - Steamworks user, achievements, stats, cloud
+
+Handles are `u32`; `-1` or a missing key means `null` on the JS side. Uploads
+pass caller-owned typed arrays so the shim never copies pixels: the host reads
+the typed array through `as_raw()` and writes into it directly. Native
+functions never allocate JavaScript values and never capture `Ctx`, which
+avoids QuickJS reference cycles (capturing `Ctx` in a closure ends in a
+`JS_FreeRuntime` assertion because the closure then owns a reference to its own
+realm).
+
+Closures accept at most seven parameters because `rquickjs` only implements
+`FromParams` for tuples up to arity seven. That constraint is why
+`texImage2D` drops the `level` argument (always zero) and infers
+`texSubImage2D` heights from the byte length.
+
+## The frame loop
+
+1. The host pumps winit events and forwards them to `__kapNative_dispatch`.
+2. Once per frame it calls `__kapNative_onFrame(now)`, which runs timers and
+   animation frame callbacks in the shim.
+3. The game calls into WebGL and Canvas 2D, which mutate the native state.
+4. KAPLAY renders into its own framebuffer and finally blits it to the
+   "default" framebuffer.
+5. The host presents that framebuffer to the window, aspect-fit with black
+   bars, then swaps buffers.
+
+QuickJS has no automatic job pump, so after every evaluation and frame the host
+drains the promise job queue with `Context::execute_pending_job`. Without it,
+promise continuations never run and asset loading stalls at its first `await`.
+
+## The default framebuffer
+
+WebGL's default framebuffer is a real offscreen framebuffer
+(`DEPTH_STENCIL` renderbuffer included), not the window backbuffer. KAPLAY
+binds "null" framebuffers constantly, reads pixels from them, and draws its
+own framebuffer into them, so the model has to match browser behavior.
+
+`present()` draws that offscreen framebuffer to the window with a fullscreen
+quad and preserves the state a browser would preserve:
+
+- the clear color
+- the viewport
+- the current program
+- the active texture unit and the `TEXTURE_2D` binding
+- blend, depth, stencil, and scissor enables
+- vertex attribute 0's pointer/enable configuration and the `ARRAY_BUFFER`
+  binding
+
+The last two matter most. KAPLAY caches its vertex format and only re-issues
+`vertexAttribPointer` when the format changes; a `present()` that leaves the
+blit quad's buffer bound poisons the cache and every subsequent frame renders
+nothing. The same applies to `BLEND`, which KAPLAY enables once at startup and
+only calls `blendFuncSeparate` afterwards. Any new `present()` work must save
+and restore everything it touches.
+
+GLSL handling lives in `crates/gfx/src/shader.rs`: GLSL ES 1.00 sources are
+translated to desktop GLSL by stripping `precision` statements and dropping
+`#version 100`. `#version 300 es` is rejected.
+
+## Canvas 2D and fonts
+
+`crates/canvas2d` implements the 2D context on tiny-skia. Text is laid out with
+selected fonts from `fontdb` (plus custom faces registered by the game) and
+outlined with `ttf-parser`; a bundled DejaVu Sans Mono is the default family so
+`monospace` always resolves. Images cross the boundary as raw RGBA: canvas
+drawing and GL uploads read the same surfaces, so no JS-side `ImageData`
+copies are needed.
+
+Premultiplication and vertical flips follow `pixelStorei` state, tracked in
+`crates/gfx/src/pixels.rs`.
+
+## Assets
+
+`crates/pak` reads either a directory or a `.pak` zip. Paths are normalized:
+query strings and hashes are stripped, `..` is rejected, and resolved paths
+must stay inside the asset root. Asset reads are synchronous on the JS side
+(`fetch` and `Image` perform the read, then resolve the promise, matching
+browser behavior closely enough for KAPLAY's loaders).
+
+## Determinism and testing
+
+Everything except presentation is testable headlessly: tests cover the pixel
+helpers, shader translation, font parsing, color parsing, archive reads, and
+the shim's browser semantics against a native stub. The host can run for a
+fixed number of frames and write a screenshot, which makes visual regressions
+checkable in CI with a software GL driver.

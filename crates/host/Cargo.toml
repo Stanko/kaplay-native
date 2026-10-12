@@ -1,0 +1,32 @@
+[package]
+name = "kaplay-native-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kaplay-native-host"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+env_logger.workspace = true
+glow.workspace = true
+glutin.workspace = true
+glutin-winit.workspace = true
+image.workspace = true
+log.workspace = true
+png.workspace = true
+rquickjs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+winit.workspace = true
+zip.workspace = true
+
+kaplay-native-steam = { path = "../steam" }
+kaplay-native-canvas2d = { path = "../canvas2d" }
+kaplay-native-gfx = { path = "../gfx" }
+kaplay-native-pak = { path = "../pak" }

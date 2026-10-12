@@ -1,0 +1,20 @@
+{
+    "name": "kaplay-native",
+    "version": "0.1.0-alpha.0",
+    "description": "Run KAPLAY games as native desktop applications with Steam support",
+    "type": "module",
+    "bin": {
+        "kaplay-native": "src/index.mjs"
+    },
+    "files": [
+        "src"
+    ],
+    "scripts": {
+        "test": "node --test ../shim/test"
+    },
+    "optionalDependencies": {},
+    "license": "MIT",
+    "engines": {
+        "node": ">=20"
+    }
+}

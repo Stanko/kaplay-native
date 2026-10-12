@@ -1,0 +1,12 @@
+[package]
+name = "kaplay-native-canvas2d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontdb.workspace = true
+thiserror.workspace = true
+tiny-skia.workspace = true
+ttf-parser.workspace = true
