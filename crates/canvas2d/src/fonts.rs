@@ -361,7 +361,12 @@ mod tests {
             Rgba::WHITE,
             None,
         );
-        let painted = pixmap.data().chunks_exact(4).any(|pixel| pixel[3] > 0);
+        let painted = pixmap
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0);
         assert!(painted);
     }
 
@@ -383,7 +388,12 @@ mod tests {
                 line_join: tiny_skia::LineJoin::Round,
             }),
         );
-        let painted = pixmap.data().chunks_exact(4).any(|pixel| pixel[3] > 0);
+        let painted = pixmap
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0);
         assert!(painted);
     }
 }

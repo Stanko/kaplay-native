@@ -42,7 +42,7 @@ pub fn flip_rows(data: &mut [u8], width: usize, height: usize) {
 }
 
 pub fn premultiply_alpha(data: &mut [u8]) {
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as u32;
         if alpha == 255 {
             continue;
@@ -54,7 +54,7 @@ pub fn premultiply_alpha(data: &mut [u8]) {
 }
 
 pub fn unpremultiply_alpha(data: &mut [u8]) {
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as u32;
         if alpha == 0 || alpha == 255 {
             continue;

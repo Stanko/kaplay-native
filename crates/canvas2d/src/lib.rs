@@ -425,7 +425,7 @@ impl Canvas2d {
 
 fn premultiply(data: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut output = data[..(width * height * 4).min(data.len())].to_vec();
-    for pixel in output.chunks_exact_mut(4) {
+    for pixel in output.as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as u32;
         if alpha == 255 {
             continue;
@@ -438,7 +438,7 @@ fn premultiply(data: &[u8], width: usize, height: usize) -> Vec<u8> {
 }
 
 fn unpremultiply(data: &mut [u8]) {
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as u32;
         if alpha == 0 || alpha == 255 {
             continue;
@@ -531,7 +531,12 @@ mod tests {
         store.set_text_baseline(context, "top");
         store.fill_text(context, "hi", 0.0, 0.0);
         let bytes = store.canvas_bytes(canvas).unwrap();
-        let painted = bytes.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+        let painted = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] > 0)
+            .count();
         assert!(painted > 0, "painted pixels: {painted}");
     }
 

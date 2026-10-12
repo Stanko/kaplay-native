@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
-            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev xvfb
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 xvfb
       - run: cargo build --release -p kaplay-native-host
       - name: Render five frames with software GL
         env:
