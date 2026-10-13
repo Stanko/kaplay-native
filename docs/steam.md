@@ -35,12 +35,19 @@ Each flat API symbol is resolved individually. A missing library or symbol
 disables Steam integration, logs at debug level, and the game keeps running.
 `--no-steam` skips loading entirely, which is what CI uses.
 
+Initialisation uses `SteamAPI_InitFlat` when the library exports it (SDK 1.65
+made `SteamAPI_Init` an inline header function) and falls back to
+`SteamAPI_Init` for older redistributables. The player name comes from
+`ISteamUser::GetPlayerName` when that flat symbol exists (SDK 1.64 and older),
+otherwise from `ISteamFriends::GetFriendPersonaName` for the local user.
+
 Interfaces whose symbol names carry a version suffix are requested by the
 suffix the current SDK exports:
 
 - `SteamAPI_SteamUser_v023`
-- `SteamAPI_SteamUserStats_v012`
+- `SteamAPI_SteamUserStats_v013` (falls back to `v012`)
 - `SteamAPI_SteamRemoteStorage_v016`
+- `SteamAPI_SteamFriends_v018` (loaded only when the player name needs it)
 
 If a future SDK bumps those versions, loading fails soft and the rest of the
 runtime is unaffected; update the suffix in `crates/steam/src/lib.rs`.
@@ -85,6 +92,29 @@ for games that load Steam state from their own event loops or tests.
    release: Steam sets the app id from the launch context.
 3. Pass the app id in production with `--appid <id>` (or the CLI equivalent)
    so `RestartAppIfNecessary` works.
+
+## Local testing without a depot
+
+1. Start the Steam client and sign in.
+2. Put a `steam_appid.txt` containing `480` (Spacewar) in the working
+   directory. Do not pass `--appid` in this mode: the flat API reads the app id
+   from the file, and `RestartAppIfNecessary` would try to relaunch an app the
+   account does not own.
+3. Point the runtime at the SDK redistributable either with
+   `KAPLAY_NATIVE_STEAM_LIB=/path/to/sdk/redistributable_bin/linux64/libsteam_api.so`
+   or by copying `libsteam_api.so` next to the host binary.
+4. Run the host from the directory with `steam_appid.txt`. Achievements,
+   stats, and cloud files persist per Steam user and can be re-read on the
+   next run.
+
+To exercise the `RestartAppIfNecessary` branch without launching from the
+client, pass `--appid 480` together with `SteamAppId=480 SteamGameId=480` in
+the environment: the call then sees a Steam launch context and returns false.
+
+The overlay only hooks when Steam injects `gameoverlayrenderer.so`. Launching
+through the client is the real test; for a direct launch,
+`LD_PRELOAD=$HOME/.local/share/Steam/ubuntu12_64/gameoverlayrenderer.so` gives
+the renderer a chance to attach.
 
 ## Manual validation checklist
 

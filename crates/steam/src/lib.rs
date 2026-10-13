@@ -19,21 +19,24 @@ pub enum SteamError {
     LibraryMissing,
     #[error("steam_api is missing the symbol {0}")]
     SymbolMissing(String),
-    #[error("SteamAPI_Init failed: Steam is not running or the app id is unknown")]
-    Init,
+    #[error("SteamAPI_Init failed: {0}")]
+    Init(String),
 }
 
 type RestartFn = unsafe extern "C" fn(u32) -> bool;
 type InitFn = unsafe extern "C" fn() -> bool;
+type InitFlatFn = unsafe extern "C" fn(*mut c_char) -> i32;
 type ShutdownFn = unsafe extern "C" fn();
 type RunCallbacksFn = unsafe extern "C" fn();
 type IsRunningFn = unsafe extern "C" fn() -> bool;
 type GetUserFn = unsafe extern "C" fn() -> *mut c_void;
 type GetPlayerNameFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
+type GetFriendsFn = unsafe extern "C" fn() -> *mut c_void;
+type GetFriendPersonaNameFn = unsafe extern "C" fn(*mut c_void, u64) -> *const c_char;
 type GetSteamIdFn = unsafe extern "C" fn(*mut c_void) -> u64;
 type GetStatsFn = unsafe extern "C" fn() -> *mut c_void;
 type SetAchievementFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> bool;
-type GetAchievementFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> bool;
+type GetAchievementFn = unsafe extern "C" fn(*mut c_void, *const c_char, *mut bool) -> bool;
 type StoreStatsFn = unsafe extern "C" fn(*mut c_void) -> bool;
 type SetStatIntFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32) -> bool;
 type GetStatIntFn = unsafe extern "C" fn(*mut c_void, *const c_char, *mut i32) -> bool;
@@ -42,8 +45,63 @@ type GetStatFloatFn = unsafe extern "C" fn(*mut c_void, *const c_char, *mut f32)
 type GetStorageFn = unsafe extern "C" fn() -> *mut c_void;
 type FileWriteFn = unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, i32) -> bool;
 type FileReadFn = unsafe extern "C" fn(*mut c_void, *const c_char, *mut u8, i32) -> i32;
+type GetFileSizeFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i32;
 type FileExistsFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> bool;
 type FileDeleteFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> bool;
+
+enum InitSource {
+    Flat(InitFlatFn),
+    Classic(InitFn),
+}
+
+impl InitSource {
+    unsafe fn call(&self) -> Result<(), SteamError> {
+        match self {
+            InitSource::Flat(init) => {
+                let mut message = [0 as c_char; 1024];
+                match (init)(message.as_mut_ptr()) {
+                    0 => Ok(()),
+                    code => {
+                        let text = CStr::from_ptr(message.as_ptr()).to_string_lossy();
+                        if text.is_empty() {
+                            Err(SteamError::Init(format!("SDK result code {code}")))
+                        } else {
+                            Err(SteamError::Init(text.into_owned()))
+                        }
+                    }
+                }
+            }
+            InitSource::Classic(init) => {
+                if (init)() {
+                    Ok(())
+                } else {
+                    Err(SteamError::Init(String::from(
+                        "Steam is not running or the app id is unknown",
+                    )))
+                }
+            }
+        }
+    }
+}
+
+enum NameSource {
+    User(GetPlayerNameFn),
+    Friends {
+        friends: GetFriendsFn,
+        persona: GetFriendPersonaNameFn,
+    },
+}
+
+fn c_string(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
 
 pub fn library_names() -> &'static [&'static str] {
     if cfg!(target_os = "windows") {
@@ -82,12 +140,12 @@ fn path_looks_valid(path: &Path) -> bool {
 pub struct SteamApi {
     _library: Library,
     restart: RestartFn,
-    init: InitFn,
+    init: InitSource,
     shutdown: ShutdownFn,
     run_callbacks: RunCallbacksFn,
     is_running: IsRunningFn,
     get_user: GetUserFn,
-    get_player_name: GetPlayerNameFn,
+    name_source: NameSource,
     get_steam_id: GetSteamIdFn,
     get_stats: GetStatsFn,
     set_achievement: SetAchievementFn,
@@ -100,6 +158,7 @@ pub struct SteamApi {
     get_storage: GetStorageFn,
     file_write: FileWriteFn,
     file_read: FileReadFn,
+    file_size: GetFileSizeFn,
     file_exists: FileExistsFn,
     file_delete: FileDeleteFn,
     initialized: bool,
@@ -127,32 +186,73 @@ impl SteamApi {
     pub fn from_library(path: &Path) -> Result<SteamApi, SteamError> {
         unsafe {
             let library = Library::new(path).map_err(|_| SteamError::LibraryMissing)?;
+            macro_rules! missing {
+                ($name:literal) => {
+                    SteamError::SymbolMissing(
+                        String::from_utf8_lossy($name)
+                            .trim_end_matches('\0')
+                            .to_string(),
+                    )
+                };
+            }
             macro_rules! symbol {
                 ($name:literal) => {
-                    *library.get::<*const c_void>($name).map_err(|_| {
-                        SteamError::SymbolMissing(
-                            String::from_utf8_lossy($name)
-                                .trim_end_matches('\0')
-                                .to_string(),
-                        )
-                    })?
+                    *library
+                        .get::<*const c_void>($name)
+                        .map_err(|_| missing!($name))?
+                };
+            }
+            macro_rules! optional {
+                ($name:literal) => {
+                    library
+                        .get::<*const c_void>($name)
+                        .ok()
+                        .map(|symbol| *symbol)
                 };
             }
             let restart: RestartFn =
                 std::mem::transmute(symbol!(b"SteamAPI_RestartAppIfNecessary\0"));
-            let init: InitFn = std::mem::transmute(symbol!(b"SteamAPI_Init\0"));
+            let init = match optional!(b"SteamAPI_InitFlat\0") {
+                Some(flat) => {
+                    InitSource::Flat(std::mem::transmute::<*const c_void, InitFlatFn>(flat))
+                }
+                None => InitSource::Classic(std::mem::transmute::<*const c_void, InitFn>(symbol!(
+                    b"SteamAPI_Init\0"
+                ))),
+            };
             let shutdown: ShutdownFn = std::mem::transmute(symbol!(b"SteamAPI_Shutdown\0"));
             let run_callbacks: RunCallbacksFn =
                 std::mem::transmute(symbol!(b"SteamAPI_RunCallbacks\0"));
             let is_running: IsRunningFn =
                 std::mem::transmute(symbol!(b"SteamAPI_IsSteamRunning\0"));
             let get_user: GetUserFn = std::mem::transmute(symbol!(b"SteamAPI_SteamUser_v023\0"));
-            let get_player_name: GetPlayerNameFn =
-                std::mem::transmute(symbol!(b"SteamAPI_ISteamUser_GetPlayerName\0"));
+            let name_source = match optional!(b"SteamAPI_ISteamUser_GetPlayerName\0") {
+                Some(get) => {
+                    NameSource::User(std::mem::transmute::<*const c_void, GetPlayerNameFn>(get))
+                }
+                None => {
+                    let friends = optional!(b"SteamAPI_SteamFriends_v018\0")
+                        .ok_or_else(|| missing!(b"SteamAPI_SteamFriends_v018\0"))?;
+                    let persona = optional!(b"SteamAPI_ISteamFriends_GetFriendPersonaName\0")
+                        .ok_or_else(|| {
+                            missing!(b"SteamAPI_ISteamFriends_GetFriendPersonaName\0")
+                        })?;
+                    NameSource::Friends {
+                        friends: std::mem::transmute::<*const c_void, GetFriendsFn>(friends),
+                        persona: std::mem::transmute::<*const c_void, GetFriendPersonaNameFn>(
+                            persona,
+                        ),
+                    }
+                }
+            };
             let get_steam_id: GetSteamIdFn =
                 std::mem::transmute(symbol!(b"SteamAPI_ISteamUser_GetSteamID\0"));
-            let get_stats: GetStatsFn =
-                std::mem::transmute(symbol!(b"SteamAPI_SteamUserStats_v012\0"));
+            let get_stats: GetStatsFn = match optional!(b"SteamAPI_SteamUserStats_v013\0")
+                .or_else(|| optional!(b"SteamAPI_SteamUserStats_v012\0"))
+            {
+                Some(stats) => std::mem::transmute::<*const c_void, GetStatsFn>(stats),
+                None => return Err(missing!(b"SteamAPI_SteamUserStats_v013\0")),
+            };
             let set_achievement: SetAchievementFn =
                 std::mem::transmute(symbol!(b"SteamAPI_ISteamUserStats_SetAchievement\0"));
             let get_achievement: GetAchievementFn =
@@ -173,6 +273,8 @@ impl SteamApi {
                 std::mem::transmute(symbol!(b"SteamAPI_ISteamRemoteStorage_FileWrite\0"));
             let file_read: FileReadFn =
                 std::mem::transmute(symbol!(b"SteamAPI_ISteamRemoteStorage_FileRead\0"));
+            let file_size: GetFileSizeFn =
+                std::mem::transmute(symbol!(b"SteamAPI_ISteamRemoteStorage_GetFileSize\0"));
             let file_exists: FileExistsFn =
                 std::mem::transmute(symbol!(b"SteamAPI_ISteamRemoteStorage_FileExists\0"));
             let file_delete: FileDeleteFn =
@@ -185,7 +287,7 @@ impl SteamApi {
                 run_callbacks,
                 is_running,
                 get_user,
-                get_player_name,
+                name_source,
                 get_steam_id,
                 get_stats,
                 set_achievement,
@@ -198,6 +300,7 @@ impl SteamApi {
                 get_storage,
                 file_write,
                 file_read,
+                file_size,
                 file_exists,
                 file_delete,
                 initialized: false,
@@ -213,12 +316,9 @@ impl SteamApi {
         if self.initialized {
             return Ok(());
         }
-        if unsafe { (self.init)() } {
-            self.initialized = true;
-            Ok(())
-        } else {
-            Err(SteamError::Init)
-        }
+        unsafe { self.init.call()? };
+        self.initialized = true;
+        Ok(())
     }
 
     pub fn shutdown(&mut self) {
@@ -251,11 +351,20 @@ impl SteamApi {
             if user.is_null() {
                 return None;
             }
-            let name = (self.get_player_name)(user);
-            if name.is_null() {
-                return None;
+            match &self.name_source {
+                NameSource::User(get_player_name) => c_string(get_player_name(user)),
+                NameSource::Friends { friends, persona } => {
+                    let friends = friends();
+                    if friends.is_null() {
+                        return None;
+                    }
+                    let steam_id = (self.get_steam_id)(user);
+                    if steam_id == 0 {
+                        return None;
+                    }
+                    c_string(persona(friends, steam_id))
+                }
             }
-            Some(CStr::from_ptr(name).to_string_lossy().into_owned())
         }
     }
 
@@ -300,7 +409,8 @@ impl SteamApi {
             if stats.is_null() {
                 return false;
             }
-            (self.get_achievement)(stats, name.as_ptr())
+            let mut achieved = false;
+            (self.get_achievement)(stats, name.as_ptr(), &mut achieved) && achieved
         }
     }
 
@@ -382,7 +492,7 @@ impl SteamApi {
             if storage.is_null() {
                 return None;
             }
-            let size = (self.file_read)(storage, name.as_ptr(), std::ptr::null_mut(), 0);
+            let size = (self.file_size)(storage, name.as_ptr());
             if size <= 0 {
                 return None;
             }
@@ -480,7 +590,7 @@ mod tests {
 
     #[test]
     fn errors_have_messages() {
-        assert!(!SteamError::Init.to_string().is_empty());
+        assert!(!SteamError::Init("x".to_string()).to_string().is_empty());
         assert!(!SteamError::SymbolMissing("x".to_string())
             .to_string()
             .is_empty());
