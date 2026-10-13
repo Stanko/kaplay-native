@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use glow::HasContext;
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextApi, ContextAttributesBuilder, PossiblyCurrentContext, Version};
 use glutin::display::{GetGlDisplay, GlDisplay};
@@ -34,6 +35,14 @@ use crate::state::{HostState, PendingMessage};
 const SHIM: &str = include_str!("../../../shim/src/shim.js");
 const DEFAULT_FONT: &[u8] = include_bytes!("../../../assets/fonts/DejaVuSansMono.ttf");
 
+fn percentile(sorted: &[f32], fraction: f32) -> f32 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let index = ((sorted.len() - 1) as f32 * fraction).round() as usize;
+    sorted[index.min(sorted.len() - 1)]
+}
+
 pub struct HostApp {
     config: HostConfig,
     assets: Rc<AssetSource>,
@@ -41,6 +50,11 @@ pub struct HostApp {
     inner: Option<Inner>,
     frames: u32,
     failed: bool,
+    frame_ms: Vec<f32>,
+    started: std::time::Instant,
+    stats_last: std::time::Instant,
+    stats_frames: u32,
+    stats_ms: f32,
 }
 
 struct Inner {
@@ -395,6 +409,11 @@ impl HostApp {
             inner: None,
             frames: 0,
             failed: false,
+            frame_ms: Vec::new(),
+            started: std::time::Instant::now(),
+            stats_last: std::time::Instant::now(),
+            stats_frames: 0,
+            stats_ms: 0.0,
         })
     }
 
@@ -402,6 +421,7 @@ impl HostApp {
         let event_loop = EventLoop::new()?;
         event_loop.set_control_flow(ControlFlow::Poll);
         let result = event_loop.run_app(&mut self);
+        self.log_frame_stats();
         if let Some(api) = self.steam.borrow_mut().as_mut() {
             api.shutdown();
         }
@@ -449,8 +469,13 @@ impl HostApp {
         let surface =
             unsafe { display.create_window_surface(&gl_config, &surface_attributes) }.ok()?;
         let gl_context = not_current.make_current(&surface).ok()?;
-        let _ =
-            surface.set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
+        let interval = if self.config.no_vsync {
+            log::info!("vertical sync disabled");
+            SwapInterval::DontWait
+        } else {
+            SwapInterval::Wait(NonZeroU32::new(1).unwrap())
+        };
+        let _ = surface.set_swap_interval(&gl_context, interval);
 
         match gl_version(&display) {
             Some(version) if version < (2, 1) => {
@@ -470,6 +495,14 @@ impl HostApp {
                 display.get_proc_address(symbol) as *const _
             })
         };
+        unsafe {
+            log::info!(
+                "renderer: {} ({}, OpenGL {})",
+                glow_context.get_parameter_string(glow::RENDERER),
+                glow_context.get_parameter_string(glow::VENDOR),
+                glow_context.get_parameter_string(glow::VERSION)
+            );
+        }
         let mut gl = GlState::new(glow_context);
         let size = window.inner_size();
         gl.resize_drawing_buffer(size.width as i32, size.height as i32);
@@ -652,6 +685,45 @@ impl HostApp {
         }
     }
 
+    fn record_frame(&mut self, ms: f32) {
+        self.frame_ms.push(ms);
+        if !self.config.stats {
+            return;
+        }
+        self.stats_frames += 1;
+        self.stats_ms += ms;
+        let elapsed = self.stats_last.elapsed().as_secs_f32();
+        if elapsed >= 1.0 {
+            log::info!(
+                "{:.1} fps ({:.2} ms avg over {} frames)",
+                self.stats_frames as f32 / elapsed,
+                self.stats_ms / self.stats_frames as f32,
+                self.stats_frames
+            );
+            self.stats_last = std::time::Instant::now();
+            self.stats_frames = 0;
+            self.stats_ms = 0.0;
+        }
+    }
+
+    fn log_frame_stats(&self) {
+        if self.frame_ms.is_empty() {
+            return;
+        }
+        let mut sorted = self.frame_ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let elapsed = self.started.elapsed().as_secs_f32();
+        log::info!(
+            "{} frames in {:.2} s: {:.1} fps, {:.2} ms avg, {:.2} ms p50, {:.2} ms p99",
+            self.frame_ms.len(),
+            elapsed,
+            self.frame_ms.len() as f32 / elapsed,
+            self.frame_ms.iter().sum::<f32>() / self.frame_ms.len() as f32,
+            percentile(&sorted, 0.5),
+            percentile(&sorted, 0.99)
+        );
+    }
+
     fn maybe_exit(&mut self, event_loop: &ActiveEventLoop) {
         let Some(inner) = self.inner.as_ref() else {
             return;
@@ -807,7 +879,9 @@ impl ApplicationHandler for HostApp {
                 inner.dispatch("visibilitychange", json!({ "hidden": occluded }));
             }
             WindowEvent::RedrawRequested => {
+                let started = std::time::Instant::now();
                 inner.frame();
+                self.record_frame(started.elapsed().as_secs_f32() * 1000.0);
                 self.frames += 1;
                 self.maybe_exit(event_loop);
             }
@@ -830,7 +904,16 @@ impl ApplicationHandler for HostApp {
 mod tests {
     use rquickjs::{Context, Runtime};
 
-    use super::{evaluate_module, evaluate_script, find_module_entry};
+    use super::{evaluate_module, evaluate_script, find_module_entry, percentile};
+
+    #[test]
+    fn percentiles_land_on_expected_samples() {
+        let mut samples: Vec<f32> = (1..=100).map(|value| value as f32).collect();
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(percentile(&samples, 0.5), 51.0);
+        assert_eq!(percentile(&samples, 0.99), 99.0);
+        assert_eq!(percentile(&[], 0.5), 0.0);
+    }
 
     #[test]
     fn finds_the_module_entry_in_a_web_build() {

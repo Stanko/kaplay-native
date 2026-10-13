@@ -52,6 +52,10 @@ struct Args {
     no_steam: bool,
     #[arg(long, help = "Run without audio output")]
     no_audio: bool,
+    #[arg(long, help = "Disable vertical sync (uncapped frame rate)")]
+    no_vsync: bool,
+    #[arg(long, help = "Log the frame rate while the game runs")]
+    stats: bool,
     #[arg(long, help = "Prefer the X11 backend on Linux")]
     x11: bool,
     #[arg(long, default_value = "KAPLAY", help = "Window title")]
@@ -107,6 +111,8 @@ fn main() -> anyhow::Result<()> {
         fullscreen: args.fullscreen,
         allow_network: args.allow_network,
         no_audio: args.no_audio,
+        no_vsync: args.no_vsync,
+        stats: args.stats,
         steam: !args.no_steam,
         headless: args.headless,
         frames: args.frames,

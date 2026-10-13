@@ -157,6 +157,37 @@ and `HTMLAudioElement` for `playMusic`, all routed through the same engine:
   sounds still start and end.
 - Pass `--no-audio` to skip opening a device entirely (used in CI).
 
+## Performance
+
+The runtime is only as fast as the build you run. For real numbers, build both
+the game and the host in release mode, then run the game's production output:
+
+```sh
+cd path/to/game/client && pnpm build
+cd path/to/kaplay-native && cargo build --release
+node cli/src/index.mjs run --web-dist path/to/game/client/dist --no-vsync --stats
+```
+
+- `cargo build --release` picks the `release` profile (`lto = "thin"`,
+  `codegen-units = 1`); `cargo build` alone produces a debug host whose frame
+  time says nothing about shipping performance. The CLI prefers
+  `target/release/kaplay-native-host` when both exist.
+- Run `dist`, not a dev server or a source bundle. `vite build` minifies and
+  substitutes `import.meta.env.DEV`, which is how games turn their own debug
+  mode off.
+- The host logs `renderer: <GPU> (<vendor>, OpenGL <version>)` at startup. If
+  it says `llvmpipe` or `softpipe`, the GPU is not being used; CI forces
+  software rendering with `LIBGL_ALWAYS_SOFTWARE`, but nothing does that by
+  default. On hybrid laptops, select the discrete GPU with `DRI_PRIME=1`
+  (Mesa) or `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia`
+  (NVIDIA), and prefer `--x11` when the compositor is Wayland.
+- Vertical sync is on by default, which caps the frame rate at the monitor
+  refresh. `--no-vsync` uncaps it to show how much headroom the frame loop
+  actually has. Some Wayland compositors ignore the request; `--x11` is not.
+- `--stats` logs a line per second (fps and average frame time). Every run
+  logs a summary on exit: total frames, fps, and average, p50, and p99 frame
+  times.
+
 ## Steam
 
 Steam support never bundles or links the Steamworks redistributables. The host

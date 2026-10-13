@@ -9,6 +9,8 @@ pub struct HostConfig {
     pub fullscreen: bool,
     pub allow_network: bool,
     pub no_audio: bool,
+    pub no_vsync: bool,
+    pub stats: bool,
     pub steam: bool,
     pub headless: bool,
     pub frames: Option<u32>,
