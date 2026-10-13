@@ -418,7 +418,18 @@ impl HostApp {
     }
 
     pub fn run(mut self) -> anyhow::Result<()> {
-        let event_loop = EventLoop::new()?;
+        #[cfg(target_os = "linux")]
+        let mut builder = {
+            let mut builder = EventLoop::builder();
+            if self.config.x11 {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_x11();
+            }
+            builder
+        };
+        #[cfg(not(target_os = "linux"))]
+        let builder = EventLoop::builder();
+        let event_loop = builder.build()?;
         event_loop.set_control_flow(ControlFlow::Poll);
         let result = event_loop.run_app(&mut self);
         self.log_frame_stats();

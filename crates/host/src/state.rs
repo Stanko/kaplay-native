@@ -89,6 +89,7 @@ impl HostState {
     }
 
     pub fn set_cursor(&self, cursor: &str) {
+        log::debug!("cursor: {cursor}");
         *self.cursor.borrow_mut() = cursor.to_string();
         if cursor == "none" {
             self.window.set_cursor_visible(false);

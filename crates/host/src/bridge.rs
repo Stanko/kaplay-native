@@ -105,7 +105,8 @@ fn install_window<'js>(
             "size",
             Function::new(ctx.clone(), move || -> Vec<i32> {
                 let size = state.window.inner_size();
-                vec![size.width as i32, size.height as i32]
+                let logical = size.to_logical::<f64>(state.window.scale_factor());
+                vec![logical.width.round() as i32, logical.height.round() as i32]
             })?,
         )?;
     }

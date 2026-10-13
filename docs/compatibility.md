@@ -50,6 +50,16 @@ drawn canvas rectangle, `movementX/movementY`, and a `buttons` bitmask.
 Keyboard events carry `key`, `code`, `repeat`, modifier flags, and
 `getModifierState`.
 
+Setting `cursor` on a `style` (`style.cursor`, or `cursor: ...` inside
+`cssText`) changes the real OS cursor. `none` hides it, which is what
+`fakeMouse` games rely on, and the standard keywords map to platform cursor
+icons.
+
+Window resizes update `innerWidth`/`innerHeight`, the canvas box reported to
+`ResizeObserver`, and dispatch a `resize` event on `window`, so KAPLAY's
+`onResize` and any `ResizeObserver`-based layout run exactly as they do in a
+browser.
+
 Wheel events carry `deltaX`, `deltaY`, and `deltaMode`.
 
 ## Canvas 2D
@@ -121,10 +131,10 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
 
 The GL path targets desktop OpenGL everywhere: compatibility contexts on
 Windows and Linux, and the core profile on macOS. On Linux, X11 and Wayland are
-supported through winit and glutin; `--x11` forces the X11 backend for
-environments where the Wayland path is unavailable (for example, software
-rendering in CI). The CI matrix builds, tests, and renders on Linux, macOS, and
-Windows.
+supported through winit and glutin; `--x11` forces the X11 backend (XWayland on
+Wayland sessions) and `--no-vsync` uncaps the frame rate, which some Wayland
+compositors otherwise ignore. The CI matrix builds, tests, and renders on
+Linux, macOS, and Windows.
 
 ## Verification story
 

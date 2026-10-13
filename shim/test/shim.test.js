@@ -130,6 +130,18 @@ test("resize updates layout and notifies observers", () => {
     assert.equal(observed[0][0].target, canvas);
 });
 
+test("style cursor changes drive the native cursor", () => {
+    const canvas = makeCanvas();
+    canvas.style.cursor = "none";
+    let call = stub.calls.filter((entry) => entry.name === "window.setCursor").at(-1);
+    assert.deepEqual(call.args, ["none"]);
+    canvas.style.cssText = "cursor: pointer; width: 100%";
+    call = stub.calls.filter((entry) => entry.name === "window.setCursor").at(-1);
+    assert.deepEqual(call.args, ["pointer"]);
+    assert.equal(canvas.style.cursor, "pointer");
+    assert.equal(canvas.style.width, "100%");
+});
+
 test("mutation observers observe, disconnect and take records", () => {
     const observer = new MutationObserver(() => {});
     observer.observe(document);

@@ -79,10 +79,6 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
 
-    if args.x11 && std::env::var_os("DISPLAY").is_some() {
-        std::env::set_var("WINIT_UNIX_BACKEND", "x11");
-    }
-
     let source = match (&args.pak, &args.dir) {
         (Some(pak), _) => AssetSource::from_pak(pak)?,
         (None, Some(dir)) => AssetSource::from_dir(dir),
@@ -113,6 +109,7 @@ fn main() -> anyhow::Result<()> {
         no_audio: args.no_audio,
         no_vsync: args.no_vsync,
         stats: args.stats,
+        x11: args.x11,
         steam: !args.no_steam,
         headless: args.headless,
         frames: args.frames,

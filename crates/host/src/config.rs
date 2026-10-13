@@ -11,6 +11,7 @@ pub struct HostConfig {
     pub no_audio: bool,
     pub no_vsync: bool,
     pub stats: bool,
+    pub x11: bool,
     pub steam: bool,
     pub headless: bool,
     pub frames: Option<u32>,

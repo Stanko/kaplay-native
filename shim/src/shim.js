@@ -187,6 +187,18 @@
 
     function makeStyle() {
         const style = {};
+        let cursor = "";
+        Object.defineProperty(style, "cursor", {
+            get() {
+                return cursor;
+            },
+            set(value) {
+                cursor = String(value);
+                native.window.setCursor(cursor);
+            },
+            enumerable: true,
+            configurable: true,
+        });
         Object.defineProperty(style, "cssText", {
             get() {
                 return Object.entries(style)
