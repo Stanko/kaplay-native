@@ -7,6 +7,8 @@ export function installStub() {
     const netRoutes = new Map();
     const netResponses = new Map();
     const netMessages = new Map();
+    const audioBuffers = new Map();
+    const audioVoices = new Map();
     const openSockets = [];
     const state = {
         time: 0,
@@ -175,6 +177,107 @@ export function installStub() {
                 const data = queue.shift();
                 out.set(data.subarray(0, out.length));
                 return data.length;
+            },
+        },
+        audio: {
+            available: () => true,
+            sampleRate: () => 48000,
+            currentTime: () => state.time / 1000,
+            setPaused: (paused) => record("audio.setPaused", [paused]),
+            decode: (request, bytes) => {
+                record("audio.decode", [request, bytes.length]);
+                const id = nextId();
+                audioBuffers.set(id, { sampleRate: 48000, channels: 2, frames: 4800, data: null });
+                globalThis.__kapNative_onAudioDecoded(request, id, true, "");
+            },
+            uploadBuffer: (sampleRate, channels, data) => {
+                const id = nextId();
+                audioBuffers.set(id, {
+                    sampleRate,
+                    channels,
+                    frames: Math.floor(data.length / channels),
+                    data: Float32Array.from(data),
+                });
+                record("audio.uploadBuffer", [id, sampleRate, channels, data.length]);
+                return id;
+            },
+            bufferInfo: (id, out) => {
+                const buffer = audioBuffers.get(id);
+                if (!buffer) return false;
+                out[0] = buffer.sampleRate;
+                out[1] = buffer.channels;
+                out[2] = buffer.frames;
+                return true;
+            },
+            readChannel: (id, channel, out) => {
+                const buffer = audioBuffers.get(id);
+                if (!buffer || !buffer.data) {
+                    out.fill(0);
+                    return out.length;
+                }
+                const frames = Math.floor(buffer.data.length / buffer.channels);
+                for (let i = 0; i < out.length && i < frames; i++) {
+                    out[i] = buffer.data[i * buffer.channels + channel] || 0;
+                }
+                return out.length;
+            },
+            freeBuffer: (id) => {
+                audioBuffers.delete(id);
+                record("audio.freeBuffer", [id]);
+            },
+            play: (buffer, gain, pan, rate, looping, offset, startAt) => {
+                const id = nextId();
+                audioVoices.set(id, {
+                    buffer,
+                    gain,
+                    pan,
+                    rate,
+                    looping,
+                    offset,
+                    startAt,
+                    time: state.time / 1000,
+                });
+                record("audio.play", [id, buffer, gain, pan, rate, looping, offset, startAt]);
+                return id;
+            },
+            setGain: (voice, gain) => {
+                const entry = audioVoices.get(voice);
+                if (entry) entry.gain = gain;
+                record("audio.setGain", [voice, gain]);
+            },
+            setPan: (voice, pan) => {
+                const entry = audioVoices.get(voice);
+                if (entry) entry.pan = pan;
+                record("audio.setPan", [voice, pan]);
+            },
+            setRate: (voice, rate) => {
+                const entry = audioVoices.get(voice);
+                if (entry) entry.rate = rate;
+                record("audio.setRate", [voice, rate]);
+            },
+            setLoop: (voice, looping) => {
+                const entry = audioVoices.get(voice);
+                if (entry) entry.looping = looping;
+                record("audio.setLoop", [voice, looping]);
+            },
+            stop: (voice) => {
+                audioVoices.delete(voice);
+                record("audio.stop", [voice]);
+            },
+            stopAt: (voice, frame) => {
+                const entry = audioVoices.get(voice);
+                if (entry) entry.stopAt = frame;
+                record("audio.stopAt", [voice, frame]);
+            },
+            position: (voice) => {
+                const entry = audioVoices.get(voice);
+                if (!entry) return -1;
+                return state.time / 1000 - entry.time + entry.offset;
+            },
+            duration: (voice) => {
+                const entry = audioVoices.get(voice);
+                const buffer = entry && audioBuffers.get(entry.buffer);
+                return buffer ? buffer.frames / buffer.sampleRate : -1;
             },
         },
         steam: {
@@ -365,5 +468,13 @@ export function installStub() {
         },
     };
 
-    return { calls, logs, state, files, canvases, net };
+    const audio = {
+        buffers: audioBuffers,
+        voices: audioVoices,
+        end(voice) {
+            globalThis.__kapNative_onVoiceEnded(voice);
+        },
+    };
+
+    return { calls, logs, state, files, canvases, net, audio };
 }

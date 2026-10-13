@@ -101,8 +101,20 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
 - `FontFace` from an `ArrayBuffer`/typed array or from `url(...)`.
 - `localStorage` is persisted as JSON in the platform data directory
   (`--save-dir` overrides it) and written atomically.
-- `AudioContext` and friends exist as silent stubs: games load and play sounds
-  without crashing, but nothing is audible yet.
+- `AudioContext`, `AudioBuffer`, `AudioBufferSourceNode`, `GainNode`,
+  `StereoPannerNode`, `MediaElementAudioSourceNode`, and `AudioParam` cover the
+  Web Audio surface KAPLAY uses. `start(when, offset, duration)`, `stop`,
+  `loop`, `playbackRate`, `detune`, `pan`, `gain` (including
+  `setValueAtTime`/`linearRampToValueAtTime`/`exponentialRampToValueAtTime`),
+  `connect`/`disconnect`, and `onended` all work.
+- `HTMLAudioElement` (`new Audio(url)`) plays music through the same mixer:
+  `play`, `pause`, `currentTime`, `duration`, `volume`, `playbackRate`, `loop`,
+  and `onended`.
+- Decoding supports WAV, MP3, FLAC, Ogg Vorbis, and Opus, from bundled files,
+  data URLs, and HTTP(S) URLs.
+- `AudioWorklet`, `AnalyserNode`, `BiquadFilterNode`, `OscillatorNode`, and
+  `AudioContext.createMediaStreamSource` are not implemented. Without an audio
+  device the engine runs silently and playback still advances in real time.
 - `navigator.getGamepads()` returns an empty list.
 
 ## Platforms

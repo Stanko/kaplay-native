@@ -675,3 +675,105 @@ test("location reflects the configured page url", () => {
     assert.equal(page.searchParams.get("instantLogin"), "");
     assert.equal(page.hash, "#menu");
 });
+
+test("decodeAudioData resolves a native audio buffer", async () => {
+    const context = new AudioContext();
+    const bytes = new TextEncoder().encode("fake audio");
+    const buffer = await context.decodeAudioData(bytes.buffer);
+    assert.equal(buffer.sampleRate, 48000);
+    assert.equal(buffer.numberOfChannels, 2);
+    assert.equal(buffer.length, 4800);
+    assert.equal(buffer.getChannelData(0).length, 4800);
+    assert.ok(Math.abs(buffer.duration - 0.1) < 1e-6);
+});
+
+test("buffer sources apply graph gain and fire ended", () => {
+    const context = new AudioContext();
+    const master = context.createGain();
+    master.gain.value = 0.5;
+    master.connect(context.destination);
+    const gain = context.createGain();
+    gain.gain.value = 0.5;
+    gain.connect(master);
+    const source = context.createBufferSource();
+    source.buffer = context.createBuffer(1, 480, 48000);
+    source.connect(gain);
+    let ended = 0;
+    source.onended = () => ended++;
+    source.start();
+    const play = stub.calls.filter((call) => call.name === "audio.play").at(-1);
+    assert.ok(play);
+    assert.ok(Math.abs(play.args[2] - 0.25) < 1e-6);
+    assert.equal(play.args[3], 0);
+    assert.equal(play.args[4], 1);
+    const voice = play.args[0];
+
+    master.gain.value = 0.25;
+    const updated = stub.calls.filter((call) => call.name === "audio.setGain").at(-1);
+    assert.ok(Math.abs(updated.args[1] - 0.125) < 1e-6);
+
+    stub.audio.end(voice);
+    assert.equal(ended, 1);
+});
+
+test("buffer sources mute when they do not reach the destination", () => {
+    const context = new AudioContext();
+    const gain = context.createGain();
+    const source = context.createBufferSource();
+    source.buffer = context.createBuffer(1, 64, 48000);
+    source.connect(gain);
+    source.start();
+    const play = stub.calls.filter((call) => call.name === "audio.play").at(-1);
+    assert.equal(play.args[2], 0);
+});
+
+test("music elements decode, play, seek and pause", async () => {
+    stub.files.set("music/Forest.ogg", new TextEncoder().encode("oggdata"));
+    const element = new Audio("music/Forest.ogg");
+    assert.equal(element.paused, true);
+    const playing = element.play();
+    advance(1);
+    await playing;
+    assert.equal(element.paused, false);
+    assert.equal(element.duration, 0.1);
+    const play = stub.calls.filter((call) => call.name === "audio.play").at(-1);
+    assert.ok(play);
+
+    advance(500);
+    assert.ok(Math.abs(element.currentTime - 0.5) < 1e-6);
+    element.currentTime = 2;
+    assert.equal(element.currentTime, 2);
+    element.pause();
+    assert.equal(element.paused, true);
+    assert.ok(stub.calls.some((call) => call.name === "audio.stop"));
+});
+
+test("media element sources route through the graph", async () => {
+    stub.files.set("music/Battle.ogg", new TextEncoder().encode("oggdata"));
+    const context = new AudioContext();
+    const master = context.createGain();
+    master.gain.value = 0.5;
+    master.connect(context.destination);
+    const element = new Audio("music/Battle.ogg");
+    element.volume = 0.5;
+    const playing = element.play();
+    advance(1);
+    await playing;
+    const before = stub.calls.filter((call) => call.name === "audio.play").at(-1);
+    assert.ok(Math.abs(before.args[2] - 0.5) < 1e-6);
+
+    const source = context.createMediaElementSource(element);
+    source.connect(master);
+    const after = stub.calls.filter((call) => call.name === "audio.setGain").at(-1);
+    assert.ok(Math.abs(after.args[1] - 0.25) < 1e-6);
+});
+
+test("suspending and resuming an audio context pauses the engine", async () => {
+    const context = new AudioContext();
+    await context.suspend();
+    assert.equal(context.state, "suspended");
+    assert.deepEqual(stub.calls.filter((call) => call.name === "audio.setPaused").at(-1).args, [true]);
+    await context.resume();
+    assert.equal(context.state, "running");
+    assert.deepEqual(stub.calls.filter((call) => call.name === "audio.setPaused").at(-1).args, [false]);
+});

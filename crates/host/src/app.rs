@@ -10,6 +10,7 @@ use glutin::display::{GetGlDisplay, GlDisplay};
 use glutin::prelude::{GlSurface, NotCurrentGlContext};
 use glutin::surface::{Surface, SwapInterval, WindowSurface};
 use glutin_winit::{DisplayBuilder, GlWindow};
+use kaplay_native_audio::{Audio, AudioEvent};
 use kaplay_native_canvas2d::Canvas2d;
 use kaplay_native_gfx::GlState;
 use kaplay_native_net::{Network, NetworkEvent};
@@ -86,6 +87,38 @@ impl Inner {
             }
         });
         self.unmark();
+    }
+
+    fn pump_audio(&self) {
+        let Some(audio) = self.state.audio.as_ref() else {
+            return;
+        };
+        for event in audio.take_events() {
+            match event {
+                AudioEvent::Decoded {
+                    request,
+                    buffer,
+                    error,
+                } => {
+                    let ok = error.is_none();
+                    let message = error.unwrap_or_default();
+                    if let Err(error) = call_global::<_, ()>(
+                        &self.js,
+                        "__kapNative_onAudioDecoded",
+                        (request, buffer, ok, message),
+                    ) {
+                        log::error!("audio decode callback {request}: {error}");
+                    }
+                }
+                AudioEvent::VoiceEnded { voice } => {
+                    if let Err(error) =
+                        call_global::<_, ()>(&self.js, "__kapNative_onVoiceEnded", (voice,))
+                    {
+                        log::error!("audio ended callback {voice}: {error}");
+                    }
+                }
+            }
+        }
     }
 
     fn pump_network(&self) {
@@ -194,6 +227,7 @@ impl Inner {
 
     fn frame(&self) {
         self.pump_network();
+        self.pump_audio();
         let now = self.state.now_ms();
         self.mark("frame update");
         let result = self.js.with(|ctx| -> Result<(), String> {
@@ -445,6 +479,16 @@ impl HostApp {
         if network.is_some() {
             log::info!("network access enabled");
         }
+        let audio = if self.config.no_audio {
+            Rc::new(Audio::silent())
+        } else {
+            Rc::new(Audio::new())
+        };
+        if audio.has_device() {
+            log::info!("audio output enabled at {} Hz", audio.sample_rate());
+        } else {
+            log::warn!("audio output unavailable, playing silently");
+        }
         let state = Rc::new(HostState {
             gl: Rc::new(std::cell::RefCell::new(gl)),
             canvas: Rc::new(std::cell::RefCell::new(Canvas2d::new(
@@ -469,6 +513,7 @@ impl HostApp {
                 .clone()
                 .unwrap_or_else(|| "kaplay-native://game/".to_string()),
             network,
+            audio: Some(audio),
             pending_response: std::cell::RefCell::new(None),
             pending_message: std::cell::RefCell::new(None),
             game_name: self.config.game_name.clone(),

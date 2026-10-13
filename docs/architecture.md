@@ -2,7 +2,7 @@
 
 ## Shape of the runtime
 
-KAPLAY Native is a drop-in host, not a fork. The repository contains six
+KAPLAY Native is a drop-in host, not a fork. The repository contains seven
 crates and one JavaScript shim:
 
 | Component | Role |
@@ -11,6 +11,8 @@ crates and one JavaScript shim:
 | `crates/gfx` | `WebGLRenderingContext` over `glow`: object handles, offscreen default framebuffer, `present()` |
 | `crates/canvas2d` | `CanvasRenderingContext2D` over tiny-skia: text, images, pixel ops |
 | `crates/pak` | asset sources: directories and `.pak` (zip) archives |
+| `crates/net` | HTTP and WebSocket transports on background threads |
+| `crates/audio` | software mixer, audio decoding, and platform output |
 | `crates/steam` | dynamic Steamworks flat API loading |
 | `shim/src/shim.js` | browser semantics: DOM, events, canvas, WebGL wrapper, fetch, storage |
 
@@ -50,6 +52,7 @@ and the remaining jobs still run.
 - `font` - register font bytes, query families
 - `canvas` - Canvas 2D operations against a native surface id
 - `gl` - WebGL 1 operations against a GL state handle table
+- `audio` - buffers, voices, mixer parameters, decode jobs, and playback clock
 - `steam` - Steamworks user, achievements, stats, cloud
 
 Handles are `u32`; `-1` or a missing key means `null` on the JS side. Uploads
@@ -102,6 +105,35 @@ TLS uses `rustls` with the `ring` provider (no OpenSSL dependency), and the
 process installs the default crypto provider before any socket starts. Requests
 and sockets are created only when `--allow-network` is passed; without it the
 shim rejects immediately with a `TypeError`.
+
+## Audio
+
+`kaplay-native-audio` decodes and mixes every sound:
+
+- **Decoding** runs on a worker thread per request. Files are identified by
+  content: Ogg Opus streams go to `opus-pure`, and everything else (WAV, MP3,
+  FLAC, Ogg Vorbis, MP4/AAC) goes to `symphonia`. Decoded samples are stored as
+  interleaved `f32` in the buffer registry. The shim gets a callback when the
+  decode finishes and pulls buffer metadata through `audio.bufferInfo`.
+- **Mixing** runs on the output thread. A voice is a buffer plus a position,
+  playback rate, gain, pan, loop flag, and optional start and stop frames. The
+  mixer renders stereo blocks with linear interpolation for resampling and a
+  constant-power pan law, and reports finished voices as events so `onended`
+  fires.
+- **Output** is ALSA (loaded dynamically, so no build-time dependency) on Linux,
+  WASAPI through `cpal` on Windows, and CoreAudio through `cpal` on macOS. The
+  output format is negotiated once; if the device cannot be opened, the host
+  logs a warning and starts a silent backend that still advances the clock and
+  finishes voices, so game logic is identical with or without hardware.
+- **The clock** is the number of frames the mixer has rendered, exposed to the
+  shim as `AudioContext.currentTime`. Parameter ramps are evaluated in the shim
+  on every frame and pushed to native voices, which keeps scheduling logic in
+  one place.
+
+Music takes the `HTMLAudioElement` path: the shim fetches the file through the
+normal asset resolution, decodes it through the same native pipeline, and
+represents playback as a single looping or one-shot voice. `playMusic`'s
+`connect`/`disconnect` calls re-evaluate the graph gain on the fly.
 
 ## The default framebuffer
 

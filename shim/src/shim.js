@@ -1651,6 +1651,226 @@
 
     // ------------------------------------------------------------------- audio
 
+    const audioBridge = native.audio || null;
+    const audioVoices = new Set();
+    const pendingDecodes = new Map();
+    let nextAudioRequest = 1;
+
+    function audioNow() {
+        if (audioBridge && typeof audioBridge.currentTime === "function") {
+            return audioBridge.currentTime();
+        }
+        return native.env.now() / 1000;
+    }
+
+    function audioAvailable() {
+        return Boolean(audioBridge && typeof audioBridge.play === "function");
+    }
+
+    function nextBufferId() {
+        return audioBridge && typeof audioBridge.uploadBuffer === "function" ? audioBridge : null;
+    }
+
+    function syncAudioGraph() {
+        for (const voice of Array.from(audioVoices)) {
+            try {
+                voice.__syncAudio();
+            } catch (error) {
+                reportError(error);
+            }
+        }
+    }
+
+    function audioTick() {
+        if (!audioVoices.size) return;
+        syncAudioGraph();
+    }
+
+    function graphParams(node) {
+        let gain = 1;
+        let pan = 0;
+        let reached = false;
+        const stack = [];
+        for (const out of node.__outs) stack.push({ node: out, gain: 1, pan: 0, panSet: false });
+        const visited = new Set();
+        while (stack.length) {
+            const entry = stack.pop();
+            const current = entry.node;
+            if (!current || visited.has(current)) continue;
+            visited.add(current);
+            if (current.__isDestination) {
+                reached = true;
+                gain *= entry.gain;
+                if (entry.panSet) pan = entry.pan;
+                continue;
+            }
+            let nextGain = entry.gain;
+            let nextPan = entry.pan;
+            let panSet = entry.panSet;
+            if (current instanceof GainNode) {
+                nextGain *= current.gain.__currentValue();
+            }
+            if (current instanceof StereoPannerNode) {
+                nextPan = current.pan.__currentValue();
+                panSet = true;
+            }
+            for (const out of current.__outs) {
+                stack.push({ node: out, gain: nextGain, pan: nextPan, panSet });
+            }
+        }
+        return { gain: reached ? gain : 0, pan };
+    }
+
+    class AudioParam {
+        constructor(value, owner) {
+            this.__value = Number(value) || 0;
+            this.__owner = owner || null;
+            this.__events = [];
+        }
+
+        get value() {
+            return this.__currentValue();
+        }
+
+        set value(value) {
+            this.__events = [];
+            this.__value = Number(value) || 0;
+            this.__notify();
+        }
+
+        __notify() {
+            if (this.__owner && typeof this.__owner.__paramChanged === "function") {
+                this.__owner.__paramChanged();
+            }
+        }
+
+        __currentValue() {
+            if (!this.__events.length) return this.__value;
+            const now = audioNow();
+            let value = this.__value;
+            let previousTime = -Infinity;
+            for (const event of this.__events) {
+                if (event.time <= now) {
+                    previousTime = event.time;
+                    value = event.value;
+                    continue;
+                }
+                const span = event.time - previousTime;
+                const progress = span > 0 ? (now - previousTime) / span : 1;
+                if (event.type === "linear") {
+                    return value + (event.value - value) * progress;
+                }
+                if (event.type === "exponential") {
+                    const start = Math.abs(value) < 1e-8 ? 1e-8 : value;
+                    const end = Math.abs(event.value) < 1e-8 ? 1e-8 : event.value;
+                    return start * Math.pow(end / start, progress);
+                }
+                return value;
+            }
+            return value;
+        }
+
+        setValueAtTime(value, when) {
+            this.__push("set", value, when);
+            return this;
+        }
+
+        linearRampToValueAtTime(value, when) {
+            if (!this.__events.length) this.__events.push({ type: "set", value: this.__value, time: 0 });
+            this.__push("linear", value, when);
+            return this;
+        }
+
+        exponentialRampToValueAtTime(value, when) {
+            if (!this.__events.length) this.__events.push({ type: "set", value: this.__value, time: 0 });
+            this.__push("exponential", value, when);
+            return this;
+        }
+
+        setTargetAtTime(value, startTime, _timeConstant) {
+            this.__push("set", value, startTime);
+            return this;
+        }
+
+        setValueCurveAtTime(values, startTime) {
+            const list = Array.from(values || []);
+            const value = list.length ? list[list.length - 1] : this.__value;
+            this.__push("set", value, startTime);
+            return this;
+        }
+
+        cancelScheduledValues(when) {
+            const time = Number(when) || 0;
+            this.__events = this.__events.filter((event) => event.time < time);
+            return this;
+        }
+
+        __push(type, value, when) {
+            const time = Math.max(0, Number(when) || 0);
+            this.__events.push({ type, value: Number(value) || 0, time });
+            this.__events.sort((a, b) => a.time - b.time);
+            this.__notify();
+        }
+    }
+
+    class AudioNode {
+        constructor(context) {
+            this.context = context;
+            this.__outs = [];
+            this.__ins = [];
+        }
+
+        connect(node) {
+            if (!node) return node;
+            if (!this.__outs.includes(node)) {
+                this.__outs.push(node);
+                if (Array.isArray(node.__ins)) node.__ins.push(this);
+            }
+            syncAudioGraph();
+            return node;
+        }
+
+        disconnect() {
+            for (const out of this.__outs) {
+                if (!Array.isArray(out.__ins)) continue;
+                const index = out.__ins.indexOf(this);
+                if (index >= 0) out.__ins.splice(index, 1);
+            }
+            this.__outs = [];
+            syncAudioGraph();
+        }
+    }
+
+    class AudioDestinationNode extends AudioNode {
+        constructor(context) {
+            super(context);
+            this.__isDestination = true;
+            this.maxChannelCount = 2;
+        }
+    }
+
+    class GainNode extends AudioNode {
+        constructor(context) {
+            super(context);
+            this.gain = new AudioParam(1, this);
+        }
+
+        __paramChanged() {
+            syncAudioGraph();
+        }
+    }
+
+    class StereoPannerNode extends AudioNode {
+        constructor(context) {
+            super(context);
+            this.pan = new AudioParam(0, this);
+        }
+
+        __paramChanged() {
+            syncAudioGraph();
+        }
+    }
+
     class AudioBuffer {
         constructor(options) {
             const settings = options || {};
@@ -1658,96 +1878,437 @@
             this.sampleRate = Number(settings.sampleRate) || 44100;
             this.numberOfChannels = Number(settings.numberOfChannels) || 1;
             this.duration = this.length / this.sampleRate;
-            this.__channels = [];
-            for (let i = 0; i < this.numberOfChannels; i++) {
-                this.__channels.push(new Float32Array(this.length));
+            this.__nativeId = Number(settings.__nativeId) || 0;
+            this.__channels = null;
+            if (!this.__nativeId) {
+                this.__channels = [];
+                for (let i = 0; i < this.numberOfChannels; i++) {
+                    this.__channels.push(new Float32Array(this.length));
+                }
             }
         }
 
         getChannelData(channel) {
+            if (!this.__channels) {
+                const channels = [];
+                for (let index = 0; index < this.numberOfChannels; index++) {
+                    const data = new Float32Array(this.length);
+                    if (this.__nativeId && audioBridge && audioBridge.readChannel) {
+                        audioBridge.readChannel(this.__nativeId, index, data);
+                    }
+                    channels.push(data);
+                }
+                this.__channels = channels;
+            }
             return this.__channels[channel] || this.__channels[0];
         }
 
         copyFromChannel(destination, channel, start) {
             const source = this.getChannelData(channel);
-            destination.set(source.subarray(start || 0, (start || 0) + destination.length));
+            const offset = start || 0;
+            destination.set(source.subarray(offset, offset + destination.length));
         }
 
         copyToChannel(source, channel, start) {
             this.getChannelData(channel).set(source, start || 0);
         }
+
+        __upload() {
+            if (this.__nativeId) return this.__nativeId;
+            if (!nextBufferId()) return 0;
+            const channels = this.numberOfChannels;
+            const interleaved = new Float32Array(this.length * channels);
+            for (let frame = 0; frame < this.length; frame++) {
+                for (let channel = 0; channel < channels; channel++) {
+                    interleaved[frame * channels + channel] = this.__channels[channel][frame];
+                }
+            }
+            this.__nativeId = audioBridge.uploadBuffer(this.sampleRate, channels, interleaved);
+            return this.__nativeId;
+        }
+    }
+
+    class AudioBufferSourceNode extends AudioNode {
+        constructor(context) {
+            super(context);
+            this.buffer = null;
+            this.__loop = false;
+            this.loopStart = 0;
+            this.loopEnd = 0;
+            this.playbackRate = new AudioParam(1, this);
+            this.detune = new AudioParam(0, this);
+            this.onended = null;
+            this.__voice = -1;
+            this.__started = false;
+            this.__stopped = false;
+            this.__offset = 0;
+            this.__startTime = 0;
+            this.__stopTime = -1;
+            this.__listeners = makeListeners();
+        }
+
+        get loop() {
+            return this.__loop;
+        }
+
+        set loop(value) {
+            this.__loop = Boolean(value);
+            this.__paramChanged();
+        }
+
+        start(when = 0, offset = 0, duration) {
+            if (this.__started) {
+                throw new Error("cannot call start more than once");
+            }
+            this.__started = true;
+            this.__stopped = false;
+            this.__offset = Math.max(0, Number(offset) || 0);
+            const time = Number(when) || 0;
+            const delay = Math.max(0, time - audioNow());
+            this.__startTime = audioNow() + delay;
+            if (duration !== undefined) {
+                this.__stopTime = this.__startTime + (Number(duration) || 0);
+            }
+            if (this.buffer) this.__createVoice();
+        }
+
+        stop(when = 0) {
+            if (!this.__started) return;
+            const time = Number(when) || 0;
+            if (this.__voice >= 0) {
+                if (time > audioNow()) {
+                    if (audioBridge && audioBridge.stopAt) {
+                        audioBridge.stopAt(this.__voice, time * this.context.sampleRate);
+                    }
+                    this.__stopTime = time;
+                } else {
+                    audioBridge.stop(this.__voice);
+                    this.__voice = -1;
+                    audioVoices.delete(this);
+                    this.__fireEnded();
+                }
+            }
+            this.__stopped = true;
+        }
+
+        __createVoice() {
+            const buffer = this.buffer;
+            if (!buffer || !audioAvailable()) return;
+            const nativeId = buffer.__upload();
+            if (!nativeId) return;
+            const params = graphParams(this);
+            const startFrame = this.__startTime > audioNow() ? this.__startTime * this.context.sampleRate : -1;
+            const voice = audioBridge.play(
+                nativeId,
+                params.gain,
+                params.pan,
+                this.playbackRate.__currentValue(),
+                this.loop,
+                this.__offset,
+                startFrame,
+            );
+            if (voice < 0) return;
+            this.__voice = voice;
+            audioVoices.add(this);
+            if (this.__stopTime >= 0) {
+                audioBridge.stopAt(voice, this.__stopTime * this.context.sampleRate);
+            }
+        }
+
+        __syncAudio() {
+            if (this.__voice < 0) return;
+            const params = graphParams(this);
+            audioBridge.setGain(this.__voice, params.gain);
+            audioBridge.setPan(this.__voice, params.pan);
+            audioBridge.setRate(this.__voice, this.playbackRate.__currentValue());
+            audioBridge.setLoop(this.__voice, this.loop);
+        }
+
+        __paramChanged() {
+            if (this.__voice >= 0) this.__syncAudio();
+        }
+
+        __fireEnded() {
+            const event = makeEvent("ended", {});
+            event.target = this;
+            try {
+                if (typeof this.onended === "function") this.onended(event);
+            } catch (error) {
+                reportError(error);
+            }
+            this.__listeners.emit(event);
+        }
+
+        addEventListener(type, fn) {
+            this.__listeners.add(type, fn);
+        }
+
+        removeEventListener(type, fn) {
+            this.__listeners.remove(type, fn);
+        }
+    }
+
+    class MediaElementAudioSourceNode extends AudioNode {
+        constructor(context, element) {
+            super(context);
+            this.mediaElement = element;
+            element.__source = this;
+        }
+
+        connect(node) {
+            const result = super.connect(node);
+            if (this.mediaElement) this.mediaElement.__syncAudio();
+            return result;
+        }
+
+        disconnect() {
+            super.disconnect();
+            if (this.mediaElement) this.mediaElement.__syncAudio();
+        }
+    }
+
+    class HTMLAudioElement {
+        constructor(src) {
+            this.src = src === undefined ? "" : String(src);
+            this.__loop = false;
+            this.crossOrigin = null;
+            this.onended = null;
+            this.muted = false;
+            this.paused = true;
+            this.duration = NaN;
+            this.__volume = 1;
+            this.__playbackRate = 1;
+            this.__offset = 0;
+            this.__voice = -1;
+            this.__buffer = null;
+            this.__ready = null;
+            this.__source = null;
+            this.__listeners = makeListeners();
+        }
+
+        get loop() {
+            return this.__loop;
+        }
+
+        set loop(value) {
+            this.__loop = Boolean(value);
+            this.__syncAudio();
+        }
+
+        get volume() {
+            return this.__volume;
+        }
+
+        set volume(value) {
+            this.__volume = Math.min(1, Math.max(0, Number(value) || 0));
+            this.__syncAudio();
+        }
+
+        get playbackRate() {
+            return this.__playbackRate;
+        }
+
+        set playbackRate(value) {
+            this.__playbackRate = Math.max(0, Number(value) || 0);
+            this.__syncAudio();
+        }
+
+        get currentTime() {
+            if (this.__voice >= 0 && audioBridge && audioBridge.position) {
+                const position = audioBridge.position(this.__voice);
+                if (position >= 0) return position;
+            }
+            return this.__offset;
+        }
+
+        set currentTime(value) {
+            this.__offset = Math.max(0, Number(value) || 0);
+            if (this.__voice >= 0) {
+                this.__restart();
+            }
+        }
+
+        play() {
+            if (!this.paused && this.__voice >= 0) return Promise.resolve();
+            this.paused = false;
+            if (this.__buffer) {
+                this.__createVoice();
+                return Promise.resolve();
+            }
+            if (!this.__ready) {
+                this.__ready = fetchResource(this.src)
+                    .then((response) => response.arrayBuffer())
+                    .then((bytes) => this.__decode(bytes));
+            }
+            return this.__ready
+                .then(() => {
+                    if (!this.paused) this.__createVoice();
+                })
+                .catch(() => {});
+        }
+
+        pause() {
+            if (this.__voice >= 0) {
+                this.__offset = this.currentTime;
+                audioBridge.stop(this.__voice);
+                audioVoices.delete(this);
+                this.__voice = -1;
+            }
+            this.paused = true;
+        }
+
+        load() {}
+
+        __decode(bytes) {
+            return new Promise((resolve, reject) => {
+                if (!audioBridge || typeof audioBridge.decode !== "function") {
+                    reject(new Error("audio decoding is not available"));
+                    return;
+                }
+                const request = nextAudioRequest++;
+                pendingDecodes.set(request, {
+                    resolve: (buffer) => {
+                        this.__buffer = buffer;
+                        this.duration = buffer.duration;
+                        resolve(buffer);
+                    },
+                    reject,
+                });
+                audioBridge.decode(request, bytesView(bytes));
+            });
+        }
+
+        __createVoice() {
+            if (!audioAvailable()) return;
+            const buffer = this.__buffer;
+            const nativeId = buffer.__upload();
+            if (!nativeId) return;
+            const voice = audioBridge.play(
+                nativeId,
+                this.__gain(),
+                0,
+                this.__playbackRate,
+                this.loop,
+                this.__offset,
+                -1,
+            );
+            if (voice < 0) return;
+            this.__voice = voice;
+            audioVoices.add(this);
+        }
+
+        __restart() {
+            if (this.__voice >= 0) {
+                audioBridge.stop(this.__voice);
+                audioVoices.delete(this);
+                this.__voice = -1;
+            }
+            if (!this.paused) this.__createVoice();
+        }
+
+        __gain() {
+            if (this.muted || !this.__source) return this.muted ? 0 : this.__volume;
+            const params = graphParams(this.__source);
+            return params.gain * this.__volume;
+        }
+
+        __syncAudio() {
+            if (this.__voice < 0) return;
+            audioBridge.setGain(this.__voice, this.__gain());
+            audioBridge.setRate(this.__voice, this.__playbackRate);
+            audioBridge.setLoop(this.__voice, this.loop);
+        }
+
+        __fireEnded() {
+            this.paused = true;
+            this.__offset = this.buffer ? this.buffer.duration : this.__offset;
+            this.__voice = -1;
+            const event = makeEvent("ended", {});
+            event.target = this;
+            try {
+                if (typeof this.onended === "function") this.onended(event);
+            } catch (error) {
+                reportError(error);
+            }
+            this.__listeners.emit(event);
+        }
+
+        addEventListener(type, fn) {
+            this.__listeners.add(type, fn);
+        }
+
+        removeEventListener(type, fn) {
+            this.__listeners.remove(type, fn);
+        }
     }
 
     class AudioContext {
         constructor() {
-            this.sampleRate = 44100;
-            this.currentTime = 0;
+            this.sampleRate = audioBridge && audioBridge.sampleRate ? audioBridge.sampleRate() || 48000 : 48000;
             this.state = "running";
-            this.destination = { connect() {}, disconnect() {} };
+            this.destination = new AudioDestinationNode(this);
+            this.listener = {};
+        }
+
+        get currentTime() {
+            return audioNow();
         }
 
         createGain() {
-            return {
-                gain: {
-                    value: 1,
-                    setValueAtTime() {},
-                    linearRampToValueAtTime() {},
-                    exponentialRampToValueAtTime() {},
-                    cancelScheduledValues() {},
-                },
-                connect() {},
-                disconnect() {},
-            };
+            return new GainNode(this);
         }
 
         createBufferSource() {
-            return {
-                buffer: null,
-                playbackRate: { value: 1 },
-                detune: { value: 0 },
-                loop: false,
-                onended: null,
-                connect() {},
-                disconnect() {},
-                start() {},
-                stop() {},
-            };
+            return new AudioBufferSourceNode(this);
         }
 
         createStereoPanner() {
-            return { pan: { value: 0 }, connect() {}, disconnect() {} };
+            return new StereoPannerNode(this);
         }
 
-        createMediaElementSource() {
-            return { connect() {}, disconnect() {} };
+        createMediaElementSource(element) {
+            return new MediaElementAudioSourceNode(this, element);
         }
 
         createBuffer(channels, length, sampleRate) {
             return new AudioBuffer({
                 numberOfChannels: channels,
                 length,
-                sampleRate,
+                sampleRate: sampleRate || this.sampleRate,
             });
         }
 
         decodeAudioData(buffer, success, failure) {
-            try {
-                const result = this.createBuffer(2, 44100, 44100);
-                if (typeof success === "function") success(result);
-                return Promise.resolve(result);
-            } catch (error) {
-                if (typeof failure === "function") failure(error);
-                return Promise.reject(error);
+            const promise = new Promise((resolve, reject) => {
+                if (!audioBridge || typeof audioBridge.decode !== "function") {
+                    reject(new Error("audio decoding is not available"));
+                    return;
+                }
+                const request = nextAudioRequest++;
+                pendingDecodes.set(request, {
+                    resolve: (audioBuffer) => resolve(audioBuffer),
+                    reject,
+                });
+                audioBridge.decode(request, bytesView(buffer));
+            });
+            if (typeof success === "function" || typeof failure === "function") {
+                promise.then(
+                    typeof success === "function" ? success : () => {},
+                    typeof failure === "function" ? failure : () => {},
+                );
             }
+            return promise;
         }
 
         suspend() {
             this.state = "suspended";
+            if (audioBridge && audioBridge.setPaused) audioBridge.setPaused(true);
             return Promise.resolve();
         }
 
         resume() {
             this.state = "running";
+            if (audioBridge && audioBridge.setPaused) audioBridge.setPaused(false);
             return Promise.resolve();
         }
 
@@ -1757,34 +2318,43 @@
         }
     }
 
-    class HTMLAudioElement {
-        constructor(src) {
-            this.src = src;
-            this.loop = false;
-            this.volume = 1;
-            this.playbackRate = 1;
-            this.currentTime = 0;
-            this.duration = 0;
-            this.crossOrigin = null;
-            this.onended = null;
-            this.paused = true;
+    global.__kapNative_onAudioDecoded = function (request, buffer, ok, message) {
+        const pending = pendingDecodes.get(request);
+        if (!pending) return;
+        pendingDecodes.delete(request);
+        if (!ok) {
+            pending.reject(new Error(message || "failed to decode audio"));
+            return;
         }
-
-        play() {
-            this.paused = false;
-            return Promise.resolve();
+        const info = new Float32Array(3);
+        let sampleRate = 48000;
+        let channels = 1;
+        let length = 0;
+        if (audioBridge && typeof audioBridge.bufferInfo === "function" && audioBridge.bufferInfo(buffer, info)) {
+            sampleRate = info[0] || 48000;
+            channels = info[1] || 1;
+            length = info[2] || 0;
         }
+        pending.resolve(
+            new AudioBuffer({
+                numberOfChannels: channels,
+                length,
+                sampleRate,
+                __nativeId: buffer,
+            }),
+        );
+    };
 
-        pause() {
-            this.paused = true;
+    global.__kapNative_onVoiceEnded = function (voice) {
+        for (const node of Array.from(audioVoices)) {
+            if (node.__voice === voice) {
+                audioVoices.delete(node);
+                node.__voice = -1;
+                node.__fireEnded();
+                return;
+            }
         }
-
-        load() {}
-
-        addEventListener() {}
-
-        removeEventListener() {}
-    }
+    };
 
     // -------------------------------------------------------------- observables
 
@@ -1927,6 +2497,7 @@
                 reportError(error);
             }
         }
+        audioTick();
     };
 
     global.__kapNative_dispatch = function (type, payloadJson) {
@@ -3116,6 +3687,12 @@
     global.Audio = HTMLAudioElement;
     define("AudioBuffer", AudioBuffer);
     define("AudioContext", AudioContext);
+    define("AudioNode", AudioNode);
+    define("AudioParam", AudioParam);
+    define("GainNode", GainNode);
+    define("StereoPannerNode", StereoPannerNode);
+    define("AudioBufferSourceNode", AudioBufferSourceNode);
+    define("MediaElementAudioSourceNode", MediaElementAudioSourceNode);
     global.webkitAudioContext = AudioContext;
     define("ResizeObserver", ResizeObserver);
     define("MutationObserver", MutationObserver);

@@ -50,6 +50,8 @@ struct Args {
     url: Option<String>,
     #[arg(long, help = "Disable Steam integration")]
     no_steam: bool,
+    #[arg(long, help = "Run without audio output")]
+    no_audio: bool,
     #[arg(long, help = "Prefer the X11 backend on Linux")]
     x11: bool,
     #[arg(long, default_value = "KAPLAY", help = "Window title")]
@@ -104,6 +106,7 @@ fn main() -> anyhow::Result<()> {
         window: parse_size(&args.window),
         fullscreen: args.fullscreen,
         allow_network: args.allow_network,
+        no_audio: args.no_audio,
         steam: !args.no_steam,
         headless: args.headless,
         frames: args.frames,

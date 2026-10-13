@@ -22,6 +22,11 @@ fn slice_f32<'a, 'js>(array: &'a TypedArray<'js, f32>) -> Option<&'a [f32]> {
     Some(unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const f32, raw.len() / 4) })
 }
 
+fn slice_f32_mut<'a, 'js>(array: &'a mut TypedArray<'js, f32>) -> Option<&'a mut [f32]> {
+    let raw = array.as_raw()?;
+    Some(unsafe { std::slice::from_raw_parts_mut(raw.as_ptr() as *mut f32, raw.len() / 4) })
+}
+
 fn handle(value: Option<u32>) -> i32 {
     value.map_or(-1, |value| value as i32)
 }
@@ -37,6 +42,7 @@ pub fn install<'js>(ctx: &Ctx<'js>, state: Rc<HostState>, shim: &str) -> rquickj
     install_canvas(ctx, &native, &state)?;
     install_gl(ctx, &native, &state)?;
     install_net(ctx, &native, &state)?;
+    install_audio(ctx, &native, &state)?;
     install_steam(ctx, &native, &state)?;
     ctx.globals().set("__kapNative", native)?;
     ctx.eval::<(), _>(shim)?;
@@ -799,6 +805,270 @@ fn install_net<'js>(
 
 fn parse_headers(json: &str) -> Vec<(String, String)> {
     serde_json::from_str(json).unwrap_or_default()
+}
+
+fn install_audio<'js>(
+    ctx: &Ctx<'js>,
+    native: &Object<'js>,
+    state: &Rc<HostState>,
+) -> rquickjs::Result<()> {
+    let object = Object::new(ctx.clone())?;
+    {
+        let state = state.clone();
+        object.set(
+            "available",
+            Function::new(ctx.clone(), move || -> bool {
+                state.audio.as_ref().is_some_and(|audio| audio.has_device())
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "sampleRate",
+            Function::new(ctx.clone(), move || -> u32 {
+                state.audio.as_ref().map_or(0, |audio| audio.sample_rate())
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "currentTime",
+            Function::new(ctx.clone(), move || -> f64 {
+                state
+                    .audio
+                    .as_ref()
+                    .map_or(0.0, |audio| audio.current_time())
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "setPaused",
+            Function::new(ctx.clone(), move |paused: bool| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.set_paused(paused);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "decode",
+            Function::new(ctx.clone(), move |request: u32, data: TypedArray<u8>| {
+                let Some(audio) = state.audio.as_ref() else {
+                    return;
+                };
+                let Some(data) = slice_u8(&data) else {
+                    return;
+                };
+                audio.decode_async(request, data.to_vec());
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "uploadBuffer",
+            Function::new(
+                ctx.clone(),
+                move |sample_rate: u32, channels: u32, data: TypedArray<f32>| -> i32 {
+                    let Some(audio) = state.audio.as_ref() else {
+                        return -1;
+                    };
+                    let Some(samples) = slice_f32(&data) else {
+                        return -1;
+                    };
+                    handle(Some(audio.upload_buffer(
+                        sample_rate,
+                        channels as u16,
+                        samples.to_vec(),
+                    )))
+                },
+            )?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "bufferInfo",
+            Function::new(
+                ctx.clone(),
+                move |id: u32, mut out: TypedArray<f32>| -> bool {
+                    let Some(audio) = state.audio.as_ref() else {
+                        return false;
+                    };
+                    let Some((sample_rate, channels, frames)) = audio.buffer_info(id) else {
+                        return false;
+                    };
+                    let Some(out) = slice_f32_mut(&mut out) else {
+                        return false;
+                    };
+                    let values = [sample_rate as f32, channels as f32, frames as f32];
+                    let length = out.len().min(values.len());
+                    out[..length].copy_from_slice(&values[..length]);
+                    true
+                },
+            )?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "readChannel",
+            Function::new(
+                ctx.clone(),
+                move |id: u32, channel: u32, mut out: TypedArray<f32>| -> i32 {
+                    let Some(audio) = state.audio.as_ref() else {
+                        return -1;
+                    };
+                    let Some(out) = slice_f32_mut(&mut out) else {
+                        return -1;
+                    };
+                    audio.read_channel(id, channel as usize, out) as i32
+                },
+            )?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "freeBuffer",
+            Function::new(ctx.clone(), move |id: u32| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.free_buffer(id);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "play",
+            Function::new(
+                ctx.clone(),
+                move |buffer: u32,
+                      gain: f64,
+                      pan: f64,
+                      rate: f64,
+                      looping: bool,
+                      offset: f64,
+                      start_at: f64|
+                      -> i32 {
+                    let Some(audio) = state.audio.as_ref() else {
+                        return -1;
+                    };
+                    let start_at = (start_at >= 0.0).then_some(start_at as u64);
+                    handle(audio.play_voice(
+                        buffer,
+                        gain as f32,
+                        pan as f32,
+                        rate,
+                        looping,
+                        offset,
+                        start_at,
+                    ))
+                },
+            )?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "setGain",
+            Function::new(ctx.clone(), move |voice: u32, gain: f64| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.set_voice_gain(voice, gain as f32);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "setPan",
+            Function::new(ctx.clone(), move |voice: u32, pan: f64| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.set_voice_pan(voice, pan as f32);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "setRate",
+            Function::new(ctx.clone(), move |voice: u32, rate: f64| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.set_voice_rate(voice, rate);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "setLoop",
+            Function::new(ctx.clone(), move |voice: u32, looping: bool| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.set_voice_loop(voice, looping);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "stop",
+            Function::new(ctx.clone(), move |voice: u32| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.stop_voice(voice);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "stopAt",
+            Function::new(ctx.clone(), move |voice: u32, frame: f64| {
+                if let Some(audio) = state.audio.as_ref() {
+                    audio.stop_voice_at(voice, frame.max(0.0) as u64);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "position",
+            Function::new(ctx.clone(), move |voice: u32| -> f64 {
+                state
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.voice_position(voice))
+                    .unwrap_or(-1.0)
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "duration",
+            Function::new(ctx.clone(), move |voice: u32| -> f64 {
+                state
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.voice_duration(voice))
+                    .unwrap_or(-1.0)
+            })?,
+        )?;
+    }
+    native.set("audio", object)?;
+    Ok(())
 }
 
 fn install_steam<'js>(

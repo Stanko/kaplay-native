@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use kaplay_native_audio::Audio;
 use kaplay_native_canvas2d::Canvas2d;
 use kaplay_native_gfx::GlState;
 use kaplay_native_net::{HttpResponse, Network};
@@ -41,6 +42,7 @@ pub struct HostState {
     pub allow_network: bool,
     pub start_url: String,
     pub network: Option<Rc<Network>>,
+    pub audio: Option<Rc<Audio>>,
     pub pending_response: RefCell<Option<HttpResponse>>,
     pub pending_message: RefCell<Option<PendingMessage>>,
     pub game_name: String,

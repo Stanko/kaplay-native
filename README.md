@@ -34,12 +34,13 @@ for the manual validation checklist.
 - Runtime: window, GL 2.1 compatibility context, frame loop, aspect-fit present
 - Bridge: WebGL 1, Canvas 2D, images, fonts, timers, events, `localStorage`
 - Network: `fetch` (HTTP/HTTPS) and `WebSocket` (ws/wss) on background threads
+- Audio: Web Audio nodes over a native software mixer, plus `HTMLAudioElement`
+  music, decoding WAV, MP3, FLAC, Ogg Vorbis, and Opus
 - Assets: directory or `.pak` archives
 - Steam: dynamic `steam_api` loading, user, achievements, stats, cloud storage
 - CLI: `run`, `dev`, `build`, `test`, `doctor`
 
-Not implemented yet: audio playback, gamepads, `Intl`, and the Steam Input
-action manifest.
+Not implemented yet: gamepads, `Intl`, and the Steam Input action manifest.
 
 ## Quick start
 
@@ -142,6 +143,19 @@ page origin, so sprites and fonts keep loading from `--dir` while API calls go
 to the server. With the example above, a Colyseus client pointed at `/colyseus`
 connects to `ws://127.0.0.1:5173/colyseus`, exactly like in a browser served by
 the Vite dev server.
+
+## Audio
+
+Sound plays through a native software mixer. The shim implements the Web Audio
+surface KAPLAY uses (`AudioContext`, `AudioBuffer`, `AudioBufferSourceNode`,
+`GainNode`, `StereoPannerNode`, `MediaElementAudioSourceNode`, `AudioParam`)
+and `HTMLAudioElement` for `playMusic`, all routed through the same engine:
+
+- Decoding: WAV, MP3, FLAC, Ogg Vorbis, and Opus, done on background threads.
+- Output: ALSA on Linux, WASAPI on Windows, CoreAudio on macOS. If no device is
+  available the game keeps running silently and `currentTime` still advances, so
+  sounds still start and end.
+- Pass `--no-audio` to skip opening a device entirely (used in CI).
 
 ## Steam
 

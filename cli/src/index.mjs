@@ -43,6 +43,7 @@ Common options:
   --fullscreen      Start fullscreen
   --title <name>    Window title
   --allow-network   Allow network requests (disabled by default)
+  --no-audio        Run without audio output
   --url <url>       Page URL games see as window.location (resolves relative requests)
   --x11             Prefer the X11 backend on Linux
 `);
@@ -58,7 +59,7 @@ function parseArgs(argv) {
         }
         const key = arg.slice(2);
         const next = argv[i + 1];
-        const takesValue = !["headless", "fullscreen", "allow-network", "x11", "help", "update"].includes(key);
+        const takesValue = !["headless", "fullscreen", "allow-network", "no-audio", "x11", "help", "update"].includes(key);
         if (takesValue && next !== undefined && !next.startsWith("--")) {
             if (key === "preload") options.preload.push(next);
             else options[key] = next;
@@ -108,6 +109,7 @@ function hostArgs(options, extra = {}) {
     if (options.fullscreen) args.push("--fullscreen");
     if (options.headless) args.push("--headless");
     if (options["allow-network"]) args.push("--allow-network");
+    if (options["no-audio"]) args.push("--no-audio");
     if (options.url) args.push("--url", options.url);
     if (options.x11) args.push("--x11");
     return args;
