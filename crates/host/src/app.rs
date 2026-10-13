@@ -243,6 +243,11 @@ impl Inner {
 
     fn dispatch_resize(&self, size: winit::dpi::PhysicalSize<u32>) {
         self.last_resize.set((size.width, size.height));
+        if let (Some(width), Some(height)) =
+            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+        {
+            self.gl_surface.resize(&self.gl_context, width, height);
+        }
         let scale = self.window.scale_factor();
         let logical = size.to_logical::<f64>(scale);
         self.dispatch(
