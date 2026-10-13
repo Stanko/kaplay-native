@@ -98,3 +98,21 @@ jobs:
         run: |
           test -s smoke.png
           node scripts/check-frame.mjs smoke.rgba 320 240
+      - name: Upload the host (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaplay-native-host-linux-x86_64
+          path: target/release/kaplay-native-host
+      - name: Upload the host (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaplay-native-host-macos-aarch64
+          path: target/release/kaplay-native-host
+      - name: Upload the host (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaplay-native-host-windows-x86_64
+          path: target/release/kaplay-native-host.exe
