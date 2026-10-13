@@ -33,6 +33,7 @@ Common options:
   --host <path>     Path to the kaplay-native-host binary
   --pak <path>      Run or write a .pak archive
   --entry <file>    Game entry script (default: main.js)
+  --web-dist <dir>  Run a web build directory (Vite/Rollup output, uses its index.html entry)
   --preload <file>  Script evaluated before the entry (repeatable)
   --window <WxH>    Window size (default: 960x540)
   --frames <n>      Exit after n frames
@@ -42,6 +43,7 @@ Common options:
   --fullscreen      Start fullscreen
   --title <name>    Window title
   --allow-network   Allow network requests (disabled by default)
+  --url <url>       Page URL games see as window.location (resolves relative requests)
   --x11             Prefer the X11 backend on Linux
 `);
 }
@@ -106,12 +108,13 @@ function hostArgs(options, extra = {}) {
     if (options.fullscreen) args.push("--fullscreen");
     if (options.headless) args.push("--headless");
     if (options["allow-network"]) args.push("--allow-network");
+    if (options.url) args.push("--url", options.url);
     if (options.x11) args.push("--x11");
     return args;
 }
 
 function gameDir(options) {
-    const dir = resolve(options._[0] ?? ".");
+    const dir = resolve(options["web-dist"] ?? options._[0] ?? ".");
     if (!existsSync(dir)) {
         console.error(`game directory not found: ${dir}`);
         process.exit(1);

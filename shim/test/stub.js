@@ -4,6 +4,10 @@ export function installStub() {
     const files = new Map([["font.ttf", new Uint8Array([1, 2, 3, 4])]]);
     const images = new Map();
     const canvases = new Map();
+    const netRoutes = new Map();
+    const netResponses = new Map();
+    const netMessages = new Map();
+    const openSockets = [];
     const state = {
         time: 0,
         storage: new Map(),
@@ -25,6 +29,7 @@ export function installStub() {
             platform: "test",
             gameName: "stub",
             networkAllowed: false,
+            startUrl: "kaplay-native://game/",
             now: () => state.time,
             log: (level, message) => logs.push({ level, message }),
             quit: () => record("env.quit", []),
@@ -126,6 +131,52 @@ export function installStub() {
             },
         },
         gl: {},
+        net: {
+            fetch: (id, method, url, headers, body) => {
+                record("net.fetch", [id, method, url, JSON.parse(headers), body ? Array.from(body) : null]);
+                const route = netRoutes.get(url);
+                if (!route) {
+                    globalThis.__kapNative_onFetchError(id, "connection refused");
+                    return true;
+                }
+                netResponses.set(id, route);
+                if (route.defer) return true;
+                const status = route.status === undefined ? 200 : route.status;
+                globalThis.__kapNative_onFetch(
+                    id,
+                    url,
+                    status,
+                    route.statusText === undefined ? "OK" : route.statusText,
+                    JSON.stringify(route.headers || []),
+                    route.body ? route.body.length : 0,
+                    status >= 200 && status < 300,
+                );
+                return true;
+            },
+            openSocket: (id, url) => {
+                record("net.openSocket", [id, url]);
+                openSockets.push(id);
+                return true;
+            },
+            sendText: (id, text) => record("net.sendText", [id, text]),
+            sendBinary: (id, data) => record("net.sendBinary", [id, Array.from(data)]),
+            closeSocket: (id, code, reason) => record("net.closeSocket", [id, code, reason]),
+            readResponse: (id, out) => {
+                const route = netResponses.get(id);
+                if (!route) return -1;
+                netResponses.delete(id);
+                const body = route.body || new Uint8Array(0);
+                out.set(body.subarray(0, out.length));
+                return Math.min(body.length, out.length);
+            },
+            readMessage: (id, out) => {
+                const queue = netMessages.get(id);
+                if (!queue || queue.length === 0) return -1;
+                const data = queue.shift();
+                out.set(data.subarray(0, out.length));
+                return data.length;
+            },
+        },
         steam: {
             available: () => true,
             playerName: () => "Tester",
@@ -277,5 +328,42 @@ export function installStub() {
     };
     globalThis.__kapNative.glCalls = () => globalThis.__kapNative.gl;
 
-    return { calls, logs, state, files, canvases };
+    const net = {
+        routes: netRoutes,
+        opened: openSockets,
+        route(url, options) {
+            const route = options || {};
+            const body = route.body === undefined
+                ? new Uint8Array(0)
+                : typeof route.body === "string"
+                    ? new TextEncoder().encode(route.body)
+                    : route.body;
+            netRoutes.set(url, {
+                status: route.status,
+                statusText: route.statusText,
+                headers: route.headers,
+                body,
+                defer: Boolean(route.defer),
+            });
+        },
+        open(id) {
+            globalThis.__kapNative_onSocketOpen(id);
+        },
+        deliver(id, data, text) {
+            const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+            const isText = text === undefined ? typeof data === "string" : Boolean(text);
+            const queue = netMessages.get(id) || [];
+            queue.push(bytes);
+            netMessages.set(id, queue);
+            globalThis.__kapNative_onSocketMessage(id, bytes.length, isText);
+        },
+        close(id, code, reason) {
+            globalThis.__kapNative_onSocketClose(id, code === undefined ? 1000 : code, reason || "");
+        },
+        fail(id, message) {
+            globalThis.__kapNative_onSocketError(id, message);
+        },
+    };
+
+    return { calls, logs, state, files, canvases, net };
 }

@@ -8,6 +8,10 @@ missing.
 
 - QuickJS via `rquickjs` with ES2020 including classes, generators, typed
   arrays, `WeakMap`, and modules-in-script support.
+- The game entry is evaluated as an ES module, matching `<script
+  type="module">` in a browser: top-level declarations stay module-scoped and
+  cannot clobber globals exported by KAPLAY or other libraries. `--preload`
+  scripts stay classic scripts, like `<script src>` on a page.
 - `Promise`, `async`/`await` with an explicit job queue pump.
 - `TextEncoder` and `TextDecoder` (UTF-8) are shimmed because QuickJS does not
   provide them.
@@ -36,6 +40,8 @@ missing.
 - `dispatchEvent`
 - `document.visibilityState` and `visibilitychange`
 - `ResizeObserver`
+- `MutationObserver` (records are not observed; the callback API is a stub used
+  by bundler polyfills)
 - `exitPointerLock`, `exitFullscreen`
 - `requestAnimationFrame`, `setTimeout`, `setInterval` and cancellations
 
@@ -73,13 +79,26 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
 
 ## Assets and resources
 
-- `fetch` for data URLs and files inside the asset root.
+- `fetch` for data URLs, blob URLs, bundled files, and HTTP(S) URLs.
+- HTTP(S) requests require `--allow-network`; without it they reject with a
+  `TypeError` that names the flag.
+- `--url` sets the page URL (`window.location`). Relative requests first check
+  the asset root and then resolve against that URL, so bundled sprites keep
+  loading from disk while API calls go to the game server.
+- `Headers`, `Request`-style `fetch(url, init)` options (`method`, `headers`,
+  `body` as string/`URLSearchParams`/`Blob`/`ArrayBuffer`/typed array), response
+  `json()`, `text()`, `arrayBuffer()`, `blob()`, `ok`, `status`, `statusText`,
+  and `AbortController` cancellation are supported. Response bodies are read on
+  the network thread and copied into the JS array buffer on the frame that
+  delivers the response.
+- `WebSocket` implements the browser surface: `readyState` constants,
+  `binaryType` (`arraybuffer` or `blob`), `send` for strings and binary data,
+  `close(code, reason)`, and `onopen`/`onmessage`/`onerror`/`onclose` plus
+  `addEventListener`. Plain `ws://` and TLS `wss://` connections are both
+  supported.
 - `Image` with data URLs and file paths (the decode path also accepts any
   image format supported by the `image` crate).
 - `FontFace` from an `ArrayBuffer`/typed array or from `url(...)`.
-- HTTP(S) requests fail with `Network requests are disabled in kaplay-native`
-  unless the host is started with `--allow-network`; even then the current
-  build only sets a flag and does not perform requests.
 - `localStorage` is persisted as JSON in the platform data directory
   (`--save-dir` overrides it) and written atomically.
 - `AudioContext` and friends exist as silent stubs: games load and play sounds

@@ -5,6 +5,7 @@ members = [
     "crates/gfx",
     "crates/canvas2d",
     "crates/pak",
+    "crates/net",
     "crates/steam",
 ]
 
@@ -26,6 +27,9 @@ glutin-winit = "0.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 libloading = "0.8"
 log = "0.4"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+ureq = { version = "3", features = ["gzip"] }
 png = "0.18"
 rquickjs = { version = "0.14", features = ["full", "classes", "array-buffer", "bytes"] }
 serde = { version = "1", features = ["derive"] }

@@ -36,6 +36,7 @@ pub fn install<'js>(ctx: &Ctx<'js>, state: Rc<HostState>, shim: &str) -> rquickj
     install_font(ctx, &native, &state)?;
     install_canvas(ctx, &native, &state)?;
     install_gl(ctx, &native, &state)?;
+    install_net(ctx, &native, &state)?;
     install_steam(ctx, &native, &state)?;
     ctx.globals().set("__kapNative", native)?;
     ctx.eval::<(), _>(shim)?;
@@ -52,6 +53,7 @@ fn install_env<'js>(
     object.set("platform", state.platform)?;
     object.set("gameName", state.game_name.clone())?;
     object.set("networkAllowed", state.allow_network)?;
+    object.set("startUrl", state.start_url.clone())?;
     {
         let state = state.clone();
         object.set(
@@ -654,6 +656,149 @@ fn source_size(state: &HostState, kind: i32, id: u32) -> (u32, u32) {
     } else {
         state.canvas.borrow().canvas_size(id).unwrap_or((0, 0))
     }
+}
+
+fn install_net<'js>(
+    ctx: &Ctx<'js>,
+    native: &Object<'js>,
+    state: &Rc<HostState>,
+) -> rquickjs::Result<()> {
+    let object = Object::new(ctx.clone())?;
+    {
+        let state = state.clone();
+        object.set(
+            "fetch",
+            Function::new(
+                ctx.clone(),
+                move |id: u32,
+                      method: String,
+                      url: String,
+                      headers: String,
+                      body: Option<TypedArray<u8>>|
+                      -> bool {
+                    let Some(network) = state.network.as_ref() else {
+                        return false;
+                    };
+                    let body = body
+                        .as_ref()
+                        .and_then(slice_u8)
+                        .map(<[u8]>::to_vec)
+                        .unwrap_or_default();
+                    network.fetch(kaplay_native_net::HttpRequest {
+                        id,
+                        method,
+                        url,
+                        headers: parse_headers(&headers),
+                        body,
+                    })
+                },
+            )?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "openSocket",
+            Function::new(ctx.clone(), move |id: u32, url: String| -> bool {
+                let Some(network) = state.network.as_ref() else {
+                    return false;
+                };
+                network.open_socket(id, url);
+                true
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "sendText",
+            Function::new(ctx.clone(), move |id: u32, text: String| {
+                if let Some(network) = state.network.as_ref() {
+                    network.send_text(id, text);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "sendBinary",
+            Function::new(ctx.clone(), move |id: u32, data: TypedArray<u8>| {
+                let Some(network) = state.network.as_ref() else {
+                    return;
+                };
+                let Some(data) = slice_u8(&data) else {
+                    return;
+                };
+                network.send_binary(id, data.to_vec());
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "closeSocket",
+            Function::new(ctx.clone(), move |id: u32, code: u32, reason: String| {
+                if let Some(network) = state.network.as_ref() {
+                    network.close_socket(id, code as u16, reason);
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "readResponse",
+            Function::new(
+                ctx.clone(),
+                move |id: u32, mut out: TypedArray<u8>| -> i32 {
+                    let Some(response) = state.pending_response.borrow_mut().take() else {
+                        return -1;
+                    };
+                    if response.id != id {
+                        *state.pending_response.borrow_mut() = Some(response);
+                        return -1;
+                    }
+                    let Some(out) = slice_u8_mut(&mut out) else {
+                        return -1;
+                    };
+                    let length = out.len().min(response.body.len());
+                    out[..length].copy_from_slice(&response.body[..length]);
+                    length as i32
+                },
+            )?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "readMessage",
+            Function::new(
+                ctx.clone(),
+                move |id: u32, mut out: TypedArray<u8>| -> i32 {
+                    let Some(message) = state.pending_message.borrow_mut().take() else {
+                        return -1;
+                    };
+                    if message.socket != id {
+                        *state.pending_message.borrow_mut() = Some(message);
+                        return -1;
+                    }
+                    let Some(out) = slice_u8_mut(&mut out) else {
+                        return -1;
+                    };
+                    let length = out.len().min(message.data.len());
+                    out[..length].copy_from_slice(&message.data[..length]);
+                    length as i32
+                },
+            )?,
+        )?;
+    }
+    native.set("net", object)?;
+    Ok(())
+}
+
+fn parse_headers(json: &str) -> Vec<(String, String)> {
+    serde_json::from_str(json).unwrap_or_default()
 }
 
 fn install_steam<'js>(

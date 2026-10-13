@@ -130,6 +130,14 @@ test("resize updates layout and notifies observers", () => {
     assert.equal(observed[0][0].target, canvas);
 });
 
+test("mutation observers observe, disconnect and take records", () => {
+    const observer = new MutationObserver(() => {});
+    observer.observe(document);
+    assert.deepEqual(observer.takeRecords(), []);
+    observer.disconnect();
+    assert.deepEqual(observer.takeRecords(), []);
+});
+
 test("canvas backing store resizes the drawing buffer", () => {
     const canvas = makeCanvas();
     const gl = canvas.getContext("webgl");
@@ -481,4 +489,189 @@ test("dom elements support lookup, nesting, and input classes", () => {
     assert.equal(document.getElementById("offline-banner"), null);
     assert.equal(banner.parentElement, null);
     assert.equal(form.children.length, 0);
+});
+
+test("headers expose browser accessors", () => {
+    const headers = new Headers({ "Content-Type": "application/json", "x-count": "2" });
+    headers.append("x-count", "3");
+    headers.set("X-Name", "frax");
+
+    assert.equal(headers.get("content-type"), "application/json");
+    assert.equal(headers.get("x-count"), "2, 3");
+    assert.equal(headers.get("missing"), null);
+    assert.equal(headers.has("X-NAME"), true);
+
+    const seen = [];
+    headers.forEach((value, key) => seen.push(`${key}=${value}`));
+    assert.deepEqual(seen, ["content-type=application/json", "x-count=2, 3", "x-name=frax"]);
+    assert.deepEqual(Array.from(new Headers(headers)), Array.from(headers.entries()));
+});
+
+test("fetch resolves data urls and rejects remote hosts without network access", async () => {
+    const response = await fetch("data:application/json,%7B%22ok%22%3Atrue%7D");
+    assert.equal(response.ok, true);
+    assert.deepEqual(await response.json(), { ok: true });
+
+    globalThis.__kapNative.env.networkAllowed = false;
+    await assert.rejects(
+        fetch("https://example.com/rooms"),
+        /network access is disabled/,
+    );
+});
+
+test("fetch performs native requests and exposes response metadata", async () => {
+    globalThis.__kapNative.env.networkAllowed = true;
+    stub.net.route("http://127.0.0.1:2567/colyseus/characters", {
+        headers: [["content-type", "application/json"]],
+        body: '{"players":3}',
+    });
+
+    const response = await fetch("http://127.0.0.1:2567/colyseus/characters", {
+        headers: { authorization: "Bearer token" },
+    });
+    assert.equal(response.ok, true);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/json");
+    assert.deepEqual(await response.json(), { players: 3 });
+
+    const call = stub.calls.find((entry) => entry.name === "net.fetch");
+    assert.deepEqual(call.args.slice(0, 4), [
+        call.args[0],
+        "GET",
+        "http://127.0.0.1:2567/colyseus/characters",
+        [["authorization", "Bearer token"]],
+    ]);
+
+    stub.net.route("http://127.0.0.1:2567/missing", {
+        status: 404,
+        statusText: "Not Found",
+        headers: [["content-type", "text/plain"]],
+        body: "nope",
+    });
+    const missing = await fetch("http://127.0.0.1:2567/missing");
+    assert.equal(missing.ok, false);
+    assert.equal(missing.status, 404);
+    assert.equal(missing.statusText, "Not Found");
+    assert.equal(await missing.text(), "nope");
+});
+
+test("fetch posts bodies and reports network failures", async () => {
+    globalThis.__kapNative.env.networkAllowed = true;
+    stub.net.route("http://127.0.0.1:2567/colyseus/matchmake/join", { body: "{}" });
+    await fetch("http://127.0.0.1:2567/colyseus/matchmake/join", {
+        method: "post",
+        headers: new Headers([["content-type", "application/json"]]),
+        body: JSON.stringify({ room: "island" }),
+    });
+    const call = stub.calls.filter((entry) => entry.name === "net.fetch").pop();
+    assert.equal(call.args[1], "POST");
+    assert.deepEqual(call.args[4], Array.from(new TextEncoder().encode('{"room":"island"}')));
+
+    await assert.rejects(fetch("http://127.0.0.1:9/rooms"), /connection refused/);
+});
+
+test("websockets forward open, message, and close events", async () => {
+    globalThis.__kapNative.env.networkAllowed = true;
+    const socket = new WebSocket("ws://127.0.0.1:2567/room", { protocols: ["colyseus"] });
+    assert.equal(socket.readyState, WebSocket.CONNECTING);
+    assert.equal(socket.protocol, "colyseus");
+
+    const events = [];
+    socket.onopen = () => events.push("open");
+    socket.onmessage = (event) => events.push(event.data);
+    socket.onclose = (event) => events.push(`close:${event.code}`);
+    socket.onerror = (event) => events.push(`error:${event.message}`);
+
+    const id = stub.net.opened.at(-1);
+    stub.net.open(id);
+    assert.equal(socket.readyState, WebSocket.OPEN);
+    assert.equal(events[0], "open");
+
+    socket.binaryType = "arraybuffer";
+    stub.net.deliver(id, "hello");
+    assert.equal(events[1], "hello");
+    stub.net.deliver(id, new Uint8Array([1, 2, 3]));
+    assert.ok(events[2] instanceof ArrayBuffer);
+    assert.deepEqual(Array.from(new Uint8Array(events[2])), [1, 2, 3]);
+
+    socket.send("ping");
+    socket.send(new Uint8Array([9, 8]));
+    const sent = stub.calls.filter((entry) => entry.name.startsWith("net.send"));
+    assert.deepEqual(sent.at(-2).args, [id, "ping"]);
+    assert.deepEqual(sent.at(-1).args, [id, [9, 8]]);
+
+    socket.close(4000, "reconnect");
+    assert.equal(socket.readyState, WebSocket.CLOSING);
+    const closed = stub.calls.find((entry) => entry.name === "net.closeSocket");
+    assert.deepEqual(closed.args, [id, 4000, "reconnect"]);
+
+    stub.net.close(id, 4000, "reconnect");
+    assert.equal(socket.readyState, WebSocket.CLOSED);
+    assert.equal(events.at(-1), "close:4000");
+});
+
+test("websockets fail cleanly when network access is disabled", async () => {
+    globalThis.__kapNative.env.networkAllowed = false;
+    const socket = new WebSocket("ws://127.0.0.1:2567/room");
+    const events = [];
+    socket.onerror = () => events.push("error");
+    socket.onclose = (event) => events.push(`close:${event.code}`);
+    const delivered = new Promise((resolve) => setTimeout(resolve, 0));
+    advance(1);
+    await delivered;
+    assert.deepEqual(events, ["error", "close:1006"]);
+    assert.equal(socket.readyState, WebSocket.CLOSED);
+});
+
+test("abort controllers cancel pending fetches", async () => {
+    globalThis.__kapNative.env.networkAllowed = true;
+    stub.net.route("http://127.0.0.1:2567/slow", { body: "late", defer: true });
+    const controller = new AbortController();
+    stub.calls.length = 0;
+    const pending = fetch("http://127.0.0.1:2567/slow", { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(pending, /aborted/);
+});
+
+test("relative requests resolve against the page url", async () => {
+    globalThis.__kapNative.env.networkAllowed = true;
+    const previous = {
+        href: location.href,
+        protocol: location.protocol,
+        host: location.host,
+        hostname: location.hostname,
+        port: location.port,
+        origin: location.origin,
+    };
+    location.href = "http://127.0.0.1:2567/";
+    location.protocol = "http:";
+    location.host = "127.0.0.1:2567";
+    location.hostname = "127.0.0.1";
+    location.port = "2567";
+    location.origin = "http://127.0.0.1:2567";
+
+    stub.net.route("http://127.0.0.1:2567/colyseus/characters", { body: '{"players":[]}' });
+    const response = await fetch("/colyseus/characters");
+    assert.deepEqual(await response.json(), { players: [] });
+
+    stub.files.set("sprites/rabbit.png", new TextEncoder().encode("bundled"));
+    const asset = fetch("sprites/rabbit.png");
+    advance(1);
+    const bundled = await asset;
+    assert.equal(await bundled.text(), "bundled");
+
+    const endpoint = new URL("/colyseus", "ws://127.0.0.1:2567");
+    assert.equal(endpoint.href, "ws://127.0.0.1:2567/colyseus");
+
+    Object.assign(location, previous);
+});
+
+test("location reflects the configured page url", () => {
+    const page = new URL("http://127.0.0.1:2567/play/index.html?debug&instantLogin#menu");
+    assert.equal(page.protocol, "http:");
+    assert.equal(page.hostname, "127.0.0.1");
+    assert.equal(page.port, "2567");
+    assert.equal(page.search, "?debug&instantLogin");
+    assert.equal(page.searchParams.get("instantLogin"), "");
+    assert.equal(page.hash, "#menu");
 });

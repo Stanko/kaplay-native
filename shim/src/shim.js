@@ -176,7 +176,11 @@
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             return bytes;
         }
-        return null;
+        try {
+            return utf8Encode(decodeURIComponent(payload));
+        } catch (error) {
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------- style
@@ -1828,6 +1832,29 @@
         for (const observer of Array.from(resizeObservers)) observer.__notify();
     }
 
+    class MutationObserver {
+        constructor(callback) {
+            this.callback = callback;
+            this.targets = new Set();
+            this.records = [];
+        }
+
+        observe(target) {
+            this.targets.add(target);
+        }
+
+        disconnect() {
+            this.targets.clear();
+            this.records = [];
+        }
+
+        takeRecords() {
+            const records = this.records;
+            this.records = [];
+            return records;
+        }
+    }
+
     // --------------------------------------------------------------- dom events
 
     function makeEvent(type, payload) {
@@ -2456,73 +2483,544 @@
         },
     };
 
-    const location = {
-        href: "kaplay-native://game/",
-        origin: "kaplay-native://game",
-        protocol: "kaplay-native:",
-        host: "game",
-        hostname: "game",
-        pathname: "/",
-        search: "",
-        hash: "",
-        username: "",
-        password: "",
-        port: "",
-        get searchParams() {
-            return new URLSearchParams(this.search);
-        },
-        toString() {
-            return this.href;
-        },
-        reload() {},
+    function makeLocation(href) {
+        let parsed;
+        try {
+            parsed = new URL(href || "kaplay-native://game/");
+        } catch (error) {
+            parsed = new URL("kaplay-native://game/");
+        }
+        return {
+            href: parsed.href,
+            origin: parsed.origin,
+            protocol: parsed.protocol,
+            host: parsed.host,
+            hostname: parsed.hostname,
+            pathname: parsed.pathname,
+            search: parsed.search,
+            hash: parsed.hash,
+            username: parsed.username,
+            password: parsed.password,
+            port: parsed.port,
+            get searchParams() {
+                return new URLSearchParams(this.search);
+            },
+            toString() {
+                return this.href;
+            },
+            assign(url) {
+                const next = new URL(url, this.href);
+                this.href = next.href;
+                this.search = next.search;
+                this.hash = next.hash;
+                this.pathname = next.pathname;
+            },
+            replace(url) {
+                this.assign(url);
+            },
+            reload() {},
+        };
+    }
+
+    const location = makeLocation(native.env.startUrl);
+
+    // -------------------------------------------------------------- networking
+
+    function copyBytes(value) {
+        const source = bytesView(value);
+        const output = new Uint8Array(source.length);
+        output.set(source);
+        return output;
+    }
+
+    function blobBytes(blob) {
+        const output = new Uint8Array(blob.size || 0);
+        let offset = 0;
+        for (const part of blob.__bytes || []) {
+            output.set(part, offset);
+            offset += part.length;
+        }
+        return output;
+    }
+
+    function requestBodyBytes(body) {
+        if (body === undefined || body === null) return undefined;
+        if (typeof body === "string") return utf8Encode(body);
+        if (body instanceof URLSearchParams) return utf8Encode(body.toString());
+        if (body instanceof Blob) return blobBytes(body);
+        if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return bytesView(body);
+        return undefined;
+    }
+
+    class Headers {
+        constructor(init) {
+            this.__map = new Map();
+            if (init instanceof Headers) {
+                init.forEach((value, key) => this.set(key, value));
+            } else if (Array.isArray(init)) {
+                for (const entry of init) this.append(entry[0], entry[1]);
+            } else if (init && typeof init === "object") {
+                for (const key of Object.keys(init)) this.set(key, init[key]);
+            }
+        }
+
+        append(name, value) {
+            const key = String(name).toLowerCase();
+            const existing = this.__map.get(key);
+            this.__map.set(key, existing === undefined ? String(value) : existing + ", " + value);
+        }
+
+        set(name, value) {
+            this.__map.set(String(name).toLowerCase(), String(value));
+        }
+
+        get(name) {
+            const value = this.__map.get(String(name).toLowerCase());
+            return value === undefined ? null : value;
+        }
+
+        has(name) {
+            return this.__map.has(String(name).toLowerCase());
+        }
+
+        delete(name) {
+            this.__map.delete(String(name).toLowerCase());
+        }
+
+        forEach(callback, thisArg) {
+            for (const [key, value] of this.__map) callback.call(thisArg, value, key, this);
+        }
+
+        entries() {
+            return this.__map.entries();
+        }
+
+        keys() {
+            return this.__map.keys();
+        }
+
+        values() {
+            return this.__map.values();
+        }
+
+        [Symbol.iterator]() {
+            return this.__map.entries();
+        }
+    }
+
+    const pendingFetches = new Map();
+    let nextRequest = 1;
+
+    class MessageEvent extends Event {
+        constructor(type, init) {
+            super(type, init);
+            const options = init || {};
+            this.data = options.data;
+            this.origin = options.origin || "";
+        }
+    }
+
+    class CloseEvent extends Event {
+        constructor(type, init) {
+            super(type, init);
+            const options = init || {};
+            this.code = Number(options.code || 0);
+            this.reason = options.reason === undefined ? "" : String(options.reason);
+            this.wasClean = Boolean(options.wasClean);
+        }
+    }
+
+    const sockets = new Map();
+    let nextSocket = 1;
+
+    class WebSocket {
+        constructor(url, protocols) {
+            this.url = String(url);
+            this.readyState = WebSocket.CONNECTING;
+            this.binaryType = "blob";
+            this.bufferedAmount = 0;
+            this.extensions = "";
+            this.protocol = "";
+            this.onopen = null;
+            this.onmessage = null;
+            this.onerror = null;
+            this.onclose = null;
+            this.__id = nextSocket++;
+            this.__listeners = makeListeners();
+            if (Array.isArray(protocols)) {
+                this.protocol = String(protocols[0] || "");
+            } else if (protocols && typeof protocols === "object") {
+                if (Array.isArray(protocols.protocols)) this.protocol = String(protocols.protocols[0] || "");
+            } else if (protocols) {
+                this.protocol = String(protocols);
+            }
+            if (!native.env.networkAllowed || !native.net) {
+                setTimeoutFn(
+                    () => this.__fail("network access is disabled, run the game with --allow-network"),
+                    0,
+                );
+                return;
+            }
+            sockets.set(this.__id, this);
+            let started = false;
+            try {
+                started = native.net.openSocket(this.__id, this.url);
+            } catch (error) {
+                setTimeoutFn(() => this.__fail(String((error && error.message) || error)), 0);
+                return;
+            }
+            if (!started) {
+                setTimeoutFn(() => this.__fail("could not start the websocket"), 0);
+            }
+        }
+
+        addEventListener(type, fn) {
+            this.__listeners.add(String(type), fn);
+        }
+
+        removeEventListener(type, fn) {
+            this.__listeners.remove(String(type), fn);
+        }
+
+        dispatchEvent(event) {
+            this.__emit(event);
+            return true;
+        }
+
+        __emit(event) {
+            event.target = this;
+            event.currentTarget = this;
+            this.__listeners.emit(event);
+            const handler = this["on" + event.type];
+            if (typeof handler === "function") {
+                try {
+                    handler.call(this, event);
+                } catch (error) {
+                    reportError(error);
+                }
+            }
+        }
+
+        send(data) {
+            if (this.readyState !== WebSocket.OPEN) {
+                throw new Error("WebSocket is not open");
+            }
+            if (typeof data === "string") {
+                native.net.sendText(this.__id, data);
+                return;
+            }
+            if (data instanceof Blob) {
+                native.net.sendBinary(this.__id, blobBytes(data));
+                return;
+            }
+            native.net.sendBinary(this.__id, bytesView(data));
+        }
+
+        close(code, reason) {
+            if (this.readyState >= WebSocket.CLOSING) return;
+            this.readyState = WebSocket.CLOSING;
+            native.net.closeSocket(
+                this.__id,
+                code === undefined ? 1000 : Number(code),
+                reason === undefined ? "" : String(reason),
+            );
+        }
+
+        __handleOpen() {
+            if (this.readyState !== WebSocket.CONNECTING) return;
+            this.readyState = WebSocket.OPEN;
+            this.__emit(new Event("open"));
+        }
+
+        __handleMessage(text, bytes) {
+            let data;
+            if (text) data = utf8Decode(bytes);
+            else if (this.binaryType === "arraybuffer") data = copyBytes(bytes).buffer;
+            else data = new Blob([bytes]);
+            this.__emit(new MessageEvent("message", { data, origin: "" }));
+        }
+
+        __handleClose(code, reason) {
+            if (this.readyState === WebSocket.CLOSED) return;
+            this.readyState = WebSocket.CLOSED;
+            sockets.delete(this.__id);
+            this.__emit(new CloseEvent("close", {
+                code,
+                reason,
+                wasClean: code === 1000 || code === 1005,
+            }));
+        }
+
+        __handleError(message) {
+            const event = new Event("error");
+            event.message = message;
+            this.__emit(event);
+        }
+
+        __fail(message) {
+            if (this.readyState !== WebSocket.CONNECTING) return;
+            this.__handleError(message);
+            this.__handleClose(1006, "");
+        }
+    }
+
+    WebSocket.CONNECTING = 0;
+    WebSocket.OPEN = 1;
+    WebSocket.CLOSING = 2;
+    WebSocket.CLOSED = 3;
+
+    global.__kapNative_onSocketOpen = function (id) {
+        const socket = sockets.get(id);
+        if (socket) socket.__handleOpen();
     };
 
-    function makeResponse(bytes, url) {
+    global.__kapNative_onSocketMessage = function (id, length, text) {
+        const socket = sockets.get(id);
+        if (!socket) return;
+        const bytes = new Uint8Array(length);
+        const copied = native.net.readMessage(id, bytes);
+        if (copied < 0) return;
+        socket.__handleMessage(Boolean(text), bytes);
+    };
+
+    global.__kapNative_onSocketClose = function (id, code, reason) {
+        const socket = sockets.get(id);
+        if (socket) socket.__handleClose(Number(code), String(reason));
+    };
+
+    global.__kapNative_onSocketError = function (id, message) {
+        const socket = sockets.get(id);
+        if (socket) socket.__handleError(String(message));
+    };
+
+    class AbortSignal {
+        constructor() {
+            this.aborted = false;
+            this.reason = undefined;
+            this.onabort = null;
+            this.__listeners = makeListeners();
+        }
+
+        addEventListener(type, fn) {
+            this.__listeners.add(String(type), fn);
+        }
+
+        removeEventListener(type, fn) {
+            this.__listeners.remove(String(type), fn);
+        }
+
+        throwIfAborted() {
+            if (this.aborted) throw this.reason;
+        }
+
+        static abort(reason) {
+            const signal = new AbortSignal();
+            signal.aborted = true;
+            signal.reason = reason === undefined ? new Error("This operation was aborted") : reason;
+            return signal;
+        }
+
+        static timeout(milliseconds) {
+            const signal = new AbortSignal();
+            signal.reason = new Error("The operation timed out");
+            signal.reason.name = "TimeoutError";
+            setTimeoutFn(() => {
+                if (!signal.aborted) signal.aborted = true;
+            }, Number(milliseconds));
+            return signal;
+        }
+    }
+
+    class AbortController {
+        constructor() {
+            this.signal = new AbortSignal();
+        }
+
+        abort(reason) {
+            if (this.signal.aborted) return;
+            this.signal.aborted = true;
+            this.signal.reason = reason === undefined
+                ? new Error("This operation was aborted")
+                : reason;
+            const event = new Event("abort");
+            event.target = this.signal;
+            this.signal.__listeners.emit(event);
+            if (typeof this.signal.onabort === "function") this.signal.onabort(event);
+        }
+    }
+
+    function makeResponse(bytes, url, init) {
+        const options = init || {};
+        const status = options.status === undefined ? 200 : Number(options.status);
+        const headers = options.headers instanceof Headers
+            ? options.headers
+            : new Headers(options.headers || {});
+        const body = copyBytes(bytes);
+        const statusText = options.statusText === undefined
+            ? (status === 200 ? "OK" : "")
+            : String(options.statusText);
         return {
-            ok: true,
-            status: 200,
-            statusText: "OK",
+            ok: status >= 200 && status < 300,
+            status,
+            statusText,
             url,
-            headers: { get() { return null; } },
+            redirected: false,
+            type: "basic",
+            headers,
             json() {
-                return Promise.resolve(JSON.parse(new TextDecoder().decode(bytes)));
+                try {
+                    return Promise.resolve(JSON.parse(utf8Decode(body)));
+                } catch (error) {
+                    return Promise.reject(error);
+                }
             },
             text() {
-                return Promise.resolve(new TextDecoder().decode(bytes));
+                return Promise.resolve(utf8Decode(body));
             },
             arrayBuffer() {
-                const output = new Uint8Array(bytes.length);
-                output.set(bytes);
-                return Promise.resolve(output.buffer);
+                return Promise.resolve(copyBytes(body).buffer);
             },
             blob() {
-                return Promise.resolve(new Blob([bytes]));
+                return Promise.resolve(
+                    new Blob([body], { type: headers.get("content-type") || "" }),
+                );
             },
         };
     }
 
-    function fetchResource(input) {
-        const url = typeof input === "string" ? input : String(input && input.url ? input.url : input);
+    function resolveFetchURL(url) {
+        if (/^https?:/i.test(url)) return url;
+        if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return null;
+        if (!/^https?:/i.test(location.protocol)) return null;
+        try {
+            return new URL(url, location.href).href;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function fetchResource(input, init) {
+        const options = init || {};
+        let url;
+        let method = options.method || "GET";
+        let headers = options.headers;
+        let body = options.body;
+        if (input && typeof input === "object") {
+            url = String(input.url === undefined ? input : input.url);
+            if (!options.method && input.method) method = input.method;
+            if (headers === undefined && input.headers) headers = input.headers;
+            if (body === undefined && input.body !== undefined) body = input.body;
+        } else {
+            url = String(input);
+        }
+        const requestHeaders = headers instanceof Headers ? headers : new Headers(headers || {});
+        const signal = options.signal;
         return new Promise((resolve, reject) => {
+            const rejectFetch = () =>
+                setTimeoutFn(() => reject(new TypeError("Failed to fetch " + url)), 0);
+            if (signal && signal.aborted) {
+                reject(signal.reason || new Error("The operation was aborted"));
+                return;
+            }
             const data = decodeDataURL(url);
             if (data) {
                 resolve(makeResponse(data, url));
                 return;
             }
-            if (/^https?:/i.test(url)) {
-                reject(new Error("Network requests are disabled in kaplay-native"));
+            if (/^blob:/i.test(url)) {
+                const stored = objectURLs.get(url);
+                if (stored) {
+                    resolve(makeResponse(blobBytes(stored), url, {
+                        headers: { "content-type": stored.type || "" },
+                    }));
+                } else {
+                    rejectFetch();
+                }
                 return;
             }
-            const size = native.fs.size(url);
-            if (size < 0) {
-                setTimeoutFn(() => reject(new TypeError("Failed to fetch " + url)), 0);
+            const relative = !/^[a-z][a-z0-9+.-]*:/i.test(url);
+            if (relative) {
+                const size = native.fs.size(url);
+                if (size >= 0) {
+                    const bytes = new Uint8Array(size);
+                    native.fs.read(url, bytes);
+                    setTimeoutFn(() => resolve(makeResponse(bytes, url)), 0);
+                    return;
+                }
+            }
+            const target = resolveFetchURL(url);
+            if (!target) {
+                rejectFetch();
                 return;
             }
-            const bytes = new Uint8Array(size);
-            native.fs.read(url, bytes);
-            setTimeoutFn(() => resolve(makeResponse(bytes, url)), 0);
+            if (!native.env.networkAllowed || !native.net) {
+                reject(
+                    new TypeError(
+                        "Failed to fetch " + target + ": network access is disabled, run the game with --allow-network",
+                    ),
+                );
+                return;
+            }
+            const id = nextRequest++;
+            pendingFetches.set(id, { resolve, reject, url: target, signal });
+            if (signal && typeof signal.addEventListener === "function") {
+                signal.addEventListener("abort", () => {
+                    const pending = pendingFetches.get(id);
+                    if (!pending) return;
+                    pendingFetches.delete(id);
+                    pending.reject(signal.reason || new Error("The operation was aborted"));
+                });
+            }
+            let started = false;
+            try {
+                const pairs = [];
+                requestHeaders.forEach((value, key) => pairs.push([key, value]));
+                started = native.net.fetch(
+                    id,
+                    String(method).toUpperCase(),
+                    target,
+                    JSON.stringify(pairs),
+                    requestBodyBytes(body),
+                );
+            } catch (error) {
+                pendingFetches.delete(id);
+                reject(error);
+                return;
+            }
+            if (!started) {
+                pendingFetches.delete(id);
+                reject(new TypeError("Failed to fetch " + target));
+            }
         });
     }
+
+    global.__kapNative_onFetch = function (id, url, status, statusText, headersJson, length, ok) {
+        const pending = pendingFetches.get(id);
+        if (!pending) return;
+        pendingFetches.delete(id);
+        let headers = new Headers();
+        try {
+            headers = new Headers(JSON.parse(headersJson));
+        } catch (error) {
+            reportError(error);
+        }
+        const bytes = new Uint8Array(length);
+        const copied = native.net.readResponse(id, bytes);
+        if (copied < 0) {
+            pending.reject(new TypeError("Failed to fetch " + url));
+            return;
+        }
+        pending.resolve(makeResponse(bytes, url, { status, statusText, headers }));
+    };
+
+    global.__kapNative_onFetchError = function (id, message) {
+        const pending = pendingFetches.get(id);
+        if (!pending) return;
+        pendingFetches.delete(id);
+        const error = new TypeError("Failed to fetch " + pending.url + ": " + message);
+        error.cause = new Error(message);
+        pending.reject(error);
+    };
 
     const console = {
         log(...args) {
@@ -2593,6 +3091,12 @@
     define("Image", Image);
     define("ImageData", ImageData);
     define("Blob", Blob);
+    define("Headers", Headers);
+    define("WebSocket", WebSocket);
+    define("MessageEvent", MessageEvent);
+    define("CloseEvent", CloseEvent);
+    define("AbortController", AbortController);
+    define("AbortSignal", AbortSignal);
     define("URL", URL);
     define("crypto", crypto);
     define("URLSearchParams", URLSearchParams);
@@ -2614,6 +3118,7 @@
     define("AudioContext", AudioContext);
     global.webkitAudioContext = AudioContext;
     define("ResizeObserver", ResizeObserver);
+    define("MutationObserver", MutationObserver);
     define("HTMLCanvasElement", HTMLCanvasElement);
     define("HTMLElement", HTMLElement);
     define("HTMLInputElement", HTMLInputElement);

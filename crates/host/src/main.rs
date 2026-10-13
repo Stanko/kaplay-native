@@ -1,6 +1,7 @@
 mod app;
 mod bridge;
 mod config;
+mod jobs;
 mod keys;
 mod screenshots;
 mod state;
@@ -42,6 +43,11 @@ struct Args {
     save_dir: Option<PathBuf>,
     #[arg(long, help = "Allow http(s) requests (disabled by default)")]
     allow_network: bool,
+    #[arg(
+        long,
+        help = "Page URL games see as window.location (used to resolve relative requests)"
+    )]
+    url: Option<String>,
     #[arg(long, help = "Disable Steam integration")]
     no_steam: bool,
     #[arg(long, help = "Prefer the X11 backend on Linux")]
@@ -105,6 +111,7 @@ fn main() -> anyhow::Result<()> {
         screenshot_raw: args.screenshot_raw,
         save_dir,
         game_name: args.title,
+        url: args.url,
     };
 
     HostApp::new(config, std::rc::Rc::new(source))?.run()

@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use kaplay_native_canvas2d::Canvas2d;
 use kaplay_native_gfx::GlState;
+use kaplay_native_net::{HttpResponse, Network};
 use kaplay_native_pak::AssetSource;
 use kaplay_native_steam::SteamApi;
 use winit::window::Window;
@@ -15,6 +16,11 @@ pub struct ImageData {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+}
+
+pub struct PendingMessage {
+    pub socket: u32,
+    pub data: Vec<u8>,
 }
 
 pub struct HostState {
@@ -33,6 +39,10 @@ pub struct HostState {
     pub platform: &'static str,
     pub host_version: &'static str,
     pub allow_network: bool,
+    pub start_url: String,
+    pub network: Option<Rc<Network>>,
+    pub pending_response: RefCell<Option<HttpResponse>>,
+    pub pending_message: RefCell<Option<PendingMessage>>,
     pub game_name: String,
     pub steam: Rc<RefCell<Option<SteamApi>>>,
 }

@@ -1,0 +1,16 @@
+[package]
+name = "kaplay-native-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+log.workspace = true
+rustls.workspace = true
+thiserror.workspace = true
+tungstenite.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

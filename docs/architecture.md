@@ -18,6 +18,26 @@ The game never imports a native module. The host installs `__kapNative` (a set
 of nested function objects keyed by numeric handles), evaluates the shim, then
 evaluates the game and the KAPLAY bundle unmodified.
 
+## Boot
+
+Startup runs in four steps:
+
+1. The host installs `__kapNative` and evaluates the shim as a classic script.
+2. `--preload` files (the KAPLAY bundle, for example) are evaluated as classic
+   scripts, so libraries that export globals keep working.
+3. The entry is resolved: `--script` if given, otherwise the module script
+   referenced by `index.html` in the asset root, otherwise the first of
+   `main.js`, `game/main.js`, `index.js` that exists.
+4. The entry is evaluated as an ES module, matching
+   `<script type="module">` in a browser. Top-level declarations stay
+   module-scoped, which prevents game functions from colliding with the
+   globals KAPLAY exports onto `window` (`UP`, `LEFT`, `RED`, and so on).
+
+After every evaluation the host pumps the microtask queue. The pump runs each
+job through `JS_ExecutePendingJob` directly instead of rquickjs's wrapper,
+which swallows exceptions: a failed job is logged with its message and stack
+and the remaining jobs still run.
+
 ## The bridge
 
 `__kapNative` is the only native surface. Each namespace is a function object:
@@ -48,17 +68,40 @@ Closures accept at most seven parameters because `rquickjs` only implements
 ## The frame loop
 
 1. The host pumps winit events and forwards them to `__kapNative_dispatch`.
-2. Once per frame it calls `__kapNative_onFrame(now)`, which runs timers and
+2. It drains network events and calls the `__kapNative_onFetch*` /
+   `__kapNative_onSocket*` shim callbacks, then drains the job queue again.
+3. Once per frame it calls `__kapNative_onFrame(now)`, which runs timers and
    animation frame callbacks in the shim.
-3. The game calls into WebGL and Canvas 2D, which mutate the native state.
-4. KAPLAY renders into its own framebuffer and finally blits it to the
+4. The game calls into WebGL and Canvas 2D, which mutate the native state.
+5. KAPLAY renders into its own framebuffer and finally blits it to the
    "default" framebuffer.
-5. The host presents that framebuffer to the window, aspect-fit with black
+6. The host presents that framebuffer to the window, aspect-fit with black
    bars, then swaps buffers.
 
 QuickJS has no automatic job pump, so after every evaluation and frame the host
 drains the promise job queue with `Context::execute_pending_job`. Without it,
 promise continuations never run and asset loading stalls at its first `await`.
+
+## Network
+
+The `kaplay-native-net` crate owns every socket. The host thread never blocks on
+I/O:
+
+- a small pool of worker threads performs HTTP requests with `ureq`;
+- each WebSocket gets its own thread with a 20 ms read timeout, so outgoing
+  frames are written promptly while incoming frames are polled and forwarded;
+- workers report `NetworkEvent`s through a channel that the frame loop drains.
+
+Response bodies stay in Rust until the shim asks for them. The host calls a
+callback with the body length, the shim allocates a `Uint8Array`, and a bridge
+function copies the bytes in and frees the Rust buffer. That keeps native
+functions from creating JavaScript values, which QuickJS's GC forbids for
+long-lived closures.
+
+TLS uses `rustls` with the `ring` provider (no OpenSSL dependency), and the
+process installs the default crypto provider before any socket starts. Requests
+and sockets are created only when `--allow-network` is passed; without it the
+shim rejects immediately with a `TypeError`.
 
 ## The default framebuffer
 
