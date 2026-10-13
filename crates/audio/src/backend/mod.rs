@@ -58,7 +58,7 @@ impl Drop for Handle {
 pub fn preferred_sample_rate() -> Option<u32> {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        return cpal_backend::preferred_sample_rate();
+        cpal_backend::preferred_sample_rate()
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {

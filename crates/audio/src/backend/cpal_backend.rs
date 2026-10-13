@@ -33,8 +33,8 @@ pub fn start(engine: Arc<Engine>) -> Result<cpal::Stream, String> {
     }
     let config = supported.config();
     let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => build::<f32>(&device, config.clone(), engine),
-        cpal::SampleFormat::I16 => build::<i16>(&device, config.clone(), engine),
+        cpal::SampleFormat::F32 => build::<f32>(&device, config, engine),
+        cpal::SampleFormat::I16 => build::<i16>(&device, config, engine),
         cpal::SampleFormat::U16 => build::<u16>(&device, config, engine),
         format => Err(format!("unsupported sample format {format:?}")),
     }?;
