@@ -444,7 +444,7 @@ impl HostApp {
             builder
         };
         #[cfg(not(target_os = "linux"))]
-        let builder = EventLoop::builder();
+        let mut builder = EventLoop::builder();
         let event_loop = builder.build()?;
         event_loop.set_control_flow(ControlFlow::Poll);
         let result = event_loop.run_app(&mut self);
