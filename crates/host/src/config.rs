@@ -11,6 +11,7 @@ pub struct HostConfig {
     pub no_audio: bool,
     pub no_vsync: bool,
     pub stats: bool,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub x11: bool,
     pub steam: bool,
     pub headless: bool,
