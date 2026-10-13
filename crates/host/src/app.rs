@@ -71,6 +71,7 @@ struct Inner {
     deadline: Rc<Cell<Option<std::time::Instant>>>,
     phase: Rc<std::cell::RefCell<String>>,
     last_present: Cell<(i32, i32, i32, i32)>,
+    last_resize: Cell<(u32, u32)>,
 }
 
 impl Inner {
@@ -240,7 +241,27 @@ impl Inner {
         self.drain();
     }
 
+    fn dispatch_resize(&self, size: winit::dpi::PhysicalSize<u32>) {
+        self.last_resize.set((size.width, size.height));
+        let scale = self.window.scale_factor();
+        let logical = size.to_logical::<f64>(scale);
+        self.dispatch(
+            "resize",
+            json!({
+                "width": logical.width,
+                "height": logical.height,
+                "framebufferWidth": size.width,
+                "framebufferHeight": size.height,
+                "dpr": scale,
+            }),
+        );
+    }
+
     fn frame(&self) {
+        let size = self.window.inner_size();
+        if self.last_resize.get() != (size.width, size.height) {
+            self.dispatch_resize(size);
+        }
         self.pump_network();
         self.pump_audio();
         let now = self.state.now_ms();
@@ -671,6 +692,7 @@ impl HostApp {
             }
         }
 
+        let initial_size = window.inner_size();
         Some(Inner {
             window,
             gl_context,
@@ -685,6 +707,7 @@ impl HostApp {
             deadline,
             phase,
             last_present: Cell::new((0, 0, 0, 0)),
+            last_resize: Cell::new((initial_size.width, initial_size.height)),
         })
     }
 
@@ -794,33 +817,10 @@ impl ApplicationHandler for HostApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                let scale = inner.window.scale_factor();
-                let logical = size.to_logical::<f64>(scale);
-                inner.dispatch(
-                    "resize",
-                    json!({
-                        "width": logical.width,
-                        "height": logical.height,
-                        "framebufferWidth": size.width,
-                        "framebufferHeight": size.height,
-                        "dpr": scale,
-                    }),
-                );
+                inner.dispatch_resize(size);
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                let size = inner.window.inner_size();
-                let scale = inner.window.scale_factor();
-                let logical = size.to_logical::<f64>(scale);
-                inner.dispatch(
-                    "resize",
-                    json!({
-                        "width": logical.width,
-                        "height": logical.height,
-                        "framebufferWidth": size.width,
-                        "framebufferHeight": size.height,
-                        "dpr": scale,
-                    }),
-                );
+                inner.dispatch_resize(inner.window.inner_size());
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.logical_key
