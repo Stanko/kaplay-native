@@ -1,0 +1,11 @@
+[package]
+name = "kaplay-native-gfx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glow.workspace = true
+log.workspace = true
+thiserror.workspace = true

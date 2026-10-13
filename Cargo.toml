@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/host",
+    "crates/gfx",
+    "crates/canvas2d",
+    "crates/pak",
+    "crates/net",
+    "crates/audio",
+    "crates/steam",
+]
+
+[workspace.package]
+version = "0.1.0-alpha.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/beemdvp/kaplay-native"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+cpal = "0.18"
+dirs = "6"
+env_logger = "0.11"
+fontdb = "0.24"
+glow = "0.18"
+glutin = "0.32"
+glutin-winit = "0.5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+libloading = "0.8"
+log = "0.4"
+opus-pure = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+symphonia = { version = "0.6", default-features = false, features = [
+    "opt-simd",
+    "all-meta",
+    "adpcm",
+    "flac",
+    "ogg",
+    "pcm",
+    "vorbis",
+    "wav",
+    "mp3",
+    "isomp4",
+    "aac",
+] }
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+ureq = { version = "3", features = ["gzip"] }
+png = "0.18"
+rquickjs = { version = "0.14", features = ["full", "classes", "array-buffer", "bytes"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tiny-skia = "0.12"
+ttf-parser = "0.25"
+winit = { version = "0.30", features = ["x11", "wayland"] }
+zip = "9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
