@@ -70,6 +70,7 @@ struct Inner {
     cursor_position: Cell<(f64, f64)>,
     deadline: Rc<Cell<Option<std::time::Instant>>>,
     phase: Rc<std::cell::RefCell<String>>,
+    last_present: Cell<(i32, i32, i32, i32)>,
 }
 
 impl Inner {
@@ -264,6 +265,21 @@ impl Inner {
         }
 
         let size = self.window.inner_size();
+        let (buffer_width, buffer_height) = self.state.gl.borrow().drawing_buffer_size();
+        let present_size = (
+            size.width as i32,
+            size.height as i32,
+            buffer_width,
+            buffer_height,
+        );
+        if self.last_present.get() != present_size {
+            log::debug!(
+                "window {}x{}, drawing buffer {buffer_width}x{buffer_height}",
+                size.width,
+                size.height
+            );
+            self.last_present.set(present_size);
+        }
         self.state
             .gl
             .borrow_mut()
@@ -668,6 +684,7 @@ impl HostApp {
             cursor_position: Cell::new((0.0, 0.0)),
             deadline,
             phase,
+            last_present: Cell::new((0, 0, 0, 0)),
         })
     }
 
