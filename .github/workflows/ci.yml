@@ -112,7 +112,8 @@ jobs:
         run: |
           set -o pipefail
           node cli/src/index.mjs pack examples/bridge --host target/release/kaplay-native-host --out packed-game
-          xvfb-run -a ./packed-game --frames 1 --no-steam --no-audio 2>&1 | grep -o 'BRIDGE .*' > packed.log
+          xvfb-run -a ./packed-game --frames 1 --no-steam --no-audio > packed-run.log 2>&1 || { cat packed-run.log; exit 1; }
+          grep -o 'BRIDGE .*' packed-run.log > packed.log
           test -s packed.log
 
   render:
