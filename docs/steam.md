@@ -107,6 +107,12 @@ for games that load Steam state from their own event loops or tests.
    stats, and cloud files persist per Steam user and can be re-read on the
    next run.
 
+`scripts/steam-overlay-test.sh` automates those steps, including the direct
+launch preload. It checks the client is running, resolves the library from
+`KAPLAY_NATIVE_STEAM_LIB` or a local SDK copy, writes `steam_appid.txt`, and
+runs the bridge example unless host arguments are passed after `--`. Use
+`--check` to validate the setup without launching.
+
 To exercise the `RestartAppIfNecessary` branch without launching from the
 client, pass `--appid 480` together with `SteamAppId=480 SteamGameId=480` in
 the environment: the call then sees a Steam launch context and returns false.
