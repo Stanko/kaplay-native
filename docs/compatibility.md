@@ -144,7 +144,7 @@ Linux, macOS, and Windows.
 covers the browser semantics against a stub bridge, and the runtime can render
 a fixed number of frames and capture a screenshot. CI builds the V8 backend in
 addition to the default QuickJS build, runs the `examples/bridge` conformance
-script on both engines, and compares the `examples/smoke` frames byte for
-byte. There is no browser or Chromium dependency anywhere in the tree by
+script on both engines, compares the `examples/smoke` frames byte for byte, and
+packs `examples/bridge` into a single-file executable and runs it. There is no browser or Chromium dependency anywhere in the tree by
 design: Steam overlay support requires a host that owns `SwapBuffers`, which
 webview shells do not allow.

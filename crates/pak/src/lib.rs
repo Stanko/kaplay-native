@@ -31,6 +31,10 @@ impl AssetSource {
             path: path.to_path_buf(),
             source,
         })?;
+        Self::from_pak_bytes(bytes)
+    }
+
+    pub fn from_pak_bytes(bytes: Vec<u8>) -> Result<Self, PakError> {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
         let mut files = HashMap::new();
 
@@ -50,7 +54,7 @@ impl AssetSource {
             entry
                 .read_to_end(&mut data)
                 .map_err(|source| PakError::Io {
-                    path: path.to_path_buf(),
+                    path: PathBuf::new(),
                     source,
                 })?;
             files.insert(name, data);

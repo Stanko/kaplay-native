@@ -1,6 +1,7 @@
 mod app;
 mod bridge;
 mod config;
+mod embed;
 mod js;
 mod keys;
 mod screenshots;
@@ -27,8 +28,8 @@ struct Args {
     dir: Option<PathBuf>,
     #[arg(long, help = "Steam application id")]
     appid: Option<u32>,
-    #[arg(long, default_value = "960x540", help = "Initial window size")]
-    window: String,
+    #[arg(long, help = "Initial window size (default: 960x540)")]
+    window: Option<String>,
     #[arg(long)]
     fullscreen: bool,
     #[arg(long, help = "Run without showing the window")]
@@ -58,8 +59,8 @@ struct Args {
     stats: bool,
     #[arg(long, help = "Prefer the X11 backend on Linux")]
     x11: bool,
-    #[arg(long, default_value = "KAPLAY", help = "Window title")]
-    title: String,
+    #[arg(long, help = "Window title (default: KAPLAY or the packaged default)")]
+    title: Option<String>,
     #[arg(long, value_name = "NAME", help = "Javascript engine (quickjs or v8)")]
     js_engine: Option<String>,
     #[arg(long, help = "Print the compiled-in javascript engines and exit")]
@@ -90,7 +91,14 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let js_engine = match &args.js_engine {
+    let mut embedded = embed::read_current();
+    let pack = embedded
+        .as_ref()
+        .map(|entry| entry.config.clone())
+        .unwrap_or_default();
+
+    let requested = args.js_engine.clone().or_else(|| pack.js_engine.clone());
+    let js_engine = match requested {
         Some(name) => match name.parse::<js::JsEngine>() {
             Ok(engine) if js::available_engines().contains(&engine) => engine,
             Ok(engine) => anyhow::bail!(
@@ -105,15 +113,18 @@ fn main() -> anyhow::Result<()> {
     let source = match (&args.pak, &args.dir) {
         (Some(pak), _) => AssetSource::from_pak(pak)?,
         (None, Some(dir)) => AssetSource::from_dir(dir),
-        (None, None) => {
-            let root = args
-                .script
-                .as_ref()
-                .and_then(|path| path.parent())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."));
-            AssetSource::from_dir(&root)
-        }
+        (None, None) => match embedded.take() {
+            Some(entry) => AssetSource::from_pak_bytes(entry.pak)?,
+            None => {
+                let root = args
+                    .script
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                AssetSource::from_dir(&root)
+            }
+        },
     };
 
     let save_dir = args.save_dir.unwrap_or_else(|| {
@@ -122,13 +133,20 @@ fn main() -> anyhow::Result<()> {
             .join("kaplay-native")
     });
 
+    let window = args
+        .window
+        .as_deref()
+        .or(pack.window.as_deref())
+        .map(parse_size)
+        .unwrap_or((960, 540));
+
     let config = HostConfig {
         script: args.script,
         preload: args.preload,
         app_id: args.appid,
-        window: parse_size(&args.window),
+        window,
         fullscreen: args.fullscreen,
-        allow_network: args.allow_network,
+        allow_network: args.allow_network || pack.network.unwrap_or(false),
         no_audio: args.no_audio,
         no_vsync: args.no_vsync,
         stats: args.stats,
@@ -139,8 +157,11 @@ fn main() -> anyhow::Result<()> {
         screenshot: args.screenshot,
         screenshot_raw: args.screenshot_raw,
         save_dir,
-        game_name: args.title,
-        url: args.url,
+        game_name: args
+            .title
+            .or(pack.title)
+            .unwrap_or_else(|| "KAPLAY".to_string()),
+        url: args.url.or(pack.url),
         js_engine,
     };
 

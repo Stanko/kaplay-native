@@ -1,8 +1,13 @@
 {
     "name": "kaplay-native",
     "version": "0.1.0-alpha.0",
-    "description": "Run KAPLAY games as native desktop applications with Steam support",
+    "description": "Run and package KAPLAY games as native desktop applications with Steam support",
     "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/beemdvp/kaplay-native.git"
+    },
+    "homepage": "https://github.com/beemdvp/kaplay-native",
     "bin": {
         "kaplay-native": "src/index.mjs"
     },
@@ -10,9 +15,8 @@
         "src"
     ],
     "scripts": {
-        "test": "node --test ../shim/test"
+        "test": "node --test ../shim/test/shim.test.js"
     },
-    "optionalDependencies": {},
     "license": "MIT",
     "engines": {
         "node": ">=20"
