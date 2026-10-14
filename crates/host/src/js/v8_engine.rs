@@ -82,15 +82,6 @@ impl Engine {
         })
     }
 
-    pub fn eval_script(&self, source: &str) -> Result<(), String> {
-        let mut isolate = self.isolate.borrow_mut();
-        isolate.cancel_terminate_execution();
-        v8::scope!(let scope, &mut *isolate);
-        let context = Local::new(scope, &self.context);
-        let scope = &mut ContextScope::new(scope, context);
-        eval_script_in(scope, source)
-    }
-
     pub fn eval_module(&self, name: &str, source: &str) -> Result<(), String> {
         let mut isolate = self.isolate.borrow_mut();
         isolate.cancel_terminate_execution();
@@ -98,6 +89,15 @@ impl Engine {
         let context = Local::new(scope, &self.context);
         let scope = &mut ContextScope::new(scope, context);
         eval_module_in(scope, name, source)
+    }
+
+    pub fn eval_preload(&self, source: &str) -> Result<(), String> {
+        let mut isolate = self.isolate.borrow_mut();
+        isolate.cancel_terminate_execution();
+        v8::scope!(let scope, &mut *isolate);
+        let context = Local::new(scope, &self.context);
+        let scope = &mut ContextScope::new(scope, context);
+        eval_preload_in(scope, source)
     }
 
     pub fn drain_jobs(&self) -> usize {
@@ -150,20 +150,6 @@ macro_rules! exception_text {
     }};
 }
 
-fn eval_script_in(scope: &mut v8::PinScope<'_, '_>, source: &str) -> Result<(), String> {
-    let source = v8::String::new(scope, source)
-        .ok_or_else(|| "failed to allocate script source".to_string())?;
-    v8::tc_scope!(let caught, scope);
-    if let Some(script) = v8::Script::compile(caught, source, None) {
-        script.run(caught);
-    }
-    if caught.has_caught() {
-        return Err(exception_text!(caught));
-    }
-    caught.perform_microtask_checkpoint();
-    Ok(())
-}
-
 fn eval_module_in(
     scope: &mut v8::PinScope<'_, '_>,
     name: &str,
@@ -202,6 +188,80 @@ fn eval_module_in(
         return Err(exception_text!(caught));
     }
     caught.perform_microtask_checkpoint();
+    Ok(())
+}
+
+fn eval_preload_in(scope: &mut v8::PinScope<'_, '_>, source: &str) -> Result<(), String> {
+    let source = v8::String::new(scope, source)
+        .ok_or_else(|| "failed to allocate preload source".to_string())?;
+    v8::tc_scope!(let caught, scope);
+    if let Some(script) = v8::Script::compile(caught, source, None) {
+        script.run(caught);
+        if caught.has_caught() {
+            return Err(exception_text!(caught));
+        }
+        caught.perform_microtask_checkpoint();
+        return Ok(());
+    }
+    caught.reset();
+    let resource_name = v8::String::new(caught, "preload")
+        .ok_or_else(|| "failed to allocate preload name".to_string())?;
+    let origin = v8::ScriptOrigin::new(
+        caught,
+        resource_name.into(),
+        0,
+        0,
+        false,
+        -1,
+        None,
+        false,
+        false,
+        true,
+        None,
+    );
+    let mut module_source = v8::script_compiler::Source::new(source, Some(&origin));
+    let Some(module) = v8::script_compiler::compile_module(caught, &mut module_source) else {
+        return Err(exception_text!(caught));
+    };
+    if module
+        .instantiate_module(caught, |_context, _specifier, _attributes, _referrer| None)
+        .is_none()
+    {
+        return Err(exception_text!(caught));
+    }
+    let _ = module.evaluate(caught);
+    if caught.has_caught() {
+        return Err(exception_text!(caught));
+    }
+    caught.perform_microtask_checkpoint();
+    expose_module_exports(caught, module)
+}
+
+fn expose_module_exports(
+    scope: &mut v8::PinScope<'_, '_>,
+    module: Local<v8::Module>,
+) -> Result<(), String> {
+    let namespace = v8::Local::<v8::Object>::try_from(module.get_module_namespace())
+        .map_err(|_| "preload module namespace is not an object".to_string())?;
+    let names = namespace
+        .get_own_property_names(scope, v8::GetPropertyNamesArgs::default())
+        .ok_or_else(|| "failed to read preload exports".to_string())?;
+    let global = scope.get_current_context().global(scope);
+    for index in 0..names.length() {
+        let Some(key) = names.get_index(scope, index) else {
+            continue;
+        };
+        let Ok(name) = v8::Local::<v8::String>::try_from(key) else {
+            continue;
+        };
+        if name.to_rust_string_lossy(scope) == "default" {
+            continue;
+        }
+        let Some(value) = namespace.get(scope, key) else {
+            continue;
+        };
+        let _ = global.set(scope, key, value);
+    }
     Ok(())
 }
 
@@ -279,7 +339,22 @@ impl WatchdogThread {
 
 #[cfg(test)]
 mod tests {
-    use super::initialize;
+    use super::{eval_preload_in, initialize};
+
+    fn with_scope<T>(test: impl FnOnce(&mut v8::PinScope<'_, '_>) -> T) -> T {
+        initialize();
+        let mut isolate = v8::Isolate::new(Default::default());
+        v8::scope!(let scope, &mut isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        test(scope)
+    }
+
+    fn read(scope: &mut v8::PinScope<'_, '_>, expression: &str) -> String {
+        let source = v8::String::new(scope, expression).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        script.run(scope).unwrap().to_rust_string_lossy(scope)
+    }
 
     #[test]
     fn evaluates_scripts_and_microtasks() {
@@ -300,5 +375,40 @@ mod tests {
         let global = scope.get_current_context().global(scope);
         let value = global.get(scope, key.into()).unwrap();
         assert_eq!(value.uint32_value(scope), Some(42));
+    }
+
+    #[test]
+    fn classic_preloads_define_globals() {
+        with_scope(|scope| {
+            eval_preload_in(scope, "var fromPreload = 3;").unwrap();
+            assert_eq!(read(scope, "String(globalThis.fromPreload)"), "3");
+        });
+    }
+
+    #[test]
+    fn module_preloads_expose_named_exports_as_globals() {
+        with_scope(|scope| {
+            eval_preload_in(
+                scope,
+                "const hidden = 4; export const answer = hidden + 38; export default 'ignored';",
+            )
+            .unwrap();
+            assert_eq!(read(scope, "String(globalThis.answer)"), "42");
+            assert_eq!(read(scope, "typeof globalThis.hidden"), "undefined");
+            assert_eq!(read(scope, "typeof globalThis.default"), "undefined");
+        });
+    }
+
+    #[test]
+    fn preload_errors_do_not_run_the_source_twice() {
+        with_scope(|scope| {
+            let error = eval_preload_in(
+                scope,
+                "globalThis.preloadRuns = (globalThis.preloadRuns ?? 0) + 1; throw new Error('boom');",
+            )
+            .unwrap_err();
+            assert!(error.contains("boom"), "{error}");
+            assert_eq!(read(scope, "String(globalThis.preloadRuns)"), "1");
+        });
     }
 }

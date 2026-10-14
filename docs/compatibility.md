@@ -12,7 +12,9 @@ missing.
 - The game entry is evaluated as an ES module, matching `<script
   type="module">` in a browser: top-level declarations stay module-scoped and
   cannot clobber globals exported by KAPLAY or other libraries. `--preload`
-  scripts stay classic scripts, like `<script src>` on a page.
+  scripts stay classic scripts, like `<script src>` on a page; a preload that
+  is only valid as a module is evaluated as one and its named exports become
+  globals.
 - `Promise`, `async`/`await` with an explicit job queue pump on both engines.
 - `TextEncoder` and `TextDecoder` (UTF-8) are shimmed. QuickJS does not provide
   them, and the shim keeps them unconditional so V8 behavior is identical.

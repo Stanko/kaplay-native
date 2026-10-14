@@ -54,6 +54,10 @@ cargo build --release
 node cli/src/index.mjs run examples/hello --preload path/to/kaplay.js
 ```
 
+Both KAPLAY builds work as preloads: the classic `kaplay.js` defines its
+globals directly, and the ES module `kaplay.mjs` gets its named exports copied
+onto the global object.
+
 Or run the host directly:
 
 ```sh

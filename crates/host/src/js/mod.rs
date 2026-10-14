@@ -183,12 +183,12 @@ impl JsRuntime {
         }
     }
 
-    pub fn eval_script(&self, source: &str) -> Result<(), String> {
+    pub fn eval_preload(&self, source: &str) -> Result<(), String> {
         match &self.backend {
             #[cfg(feature = "quickjs")]
-            Backend::QuickJs(engine) => engine.eval_script(source),
+            Backend::QuickJs(engine) => engine.eval_preload(source),
             #[cfg(feature = "v8")]
-            Backend::V8(engine) => engine.eval_script(source),
+            Backend::V8(engine) => engine.eval_preload(source),
         }
     }
 

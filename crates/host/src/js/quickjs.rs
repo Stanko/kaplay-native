@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -32,12 +32,12 @@ impl Engine {
         })
     }
 
-    pub fn eval_script(&self, source: &str) -> Result<(), String> {
-        evaluate_script(&self.context, source)
-    }
-
     pub fn eval_module(&self, name: &str, source: &str) -> Result<(), String> {
         evaluate_module(&self.context, name, source)
+    }
+
+    pub fn eval_preload(&self, source: &str) -> Result<(), String> {
+        self.context.with(|ctx| evaluate_preload(&ctx, source))
     }
 
     pub fn drain_jobs(&self) -> usize {
@@ -119,13 +119,76 @@ fn install_rejection_tracker(runtime: &Runtime) {
     )));
 }
 
-fn evaluate_script(context: &Context, source: &str) -> Result<(), String> {
-    context.with(|ctx| {
-        ctx.eval::<(), _>(source.as_bytes())
-            .map_err(|error| js_error(&ctx, error))?;
-        run_pending_jobs(&ctx);
-        Ok(())
-    })
+fn evaluate_script_source(ctx: &rquickjs::Ctx<'_>, source: &str) -> Result<(), String> {
+    ctx.eval::<(), _>(source.as_bytes())
+        .map_err(|error| js_error(ctx, error))?;
+    run_pending_jobs(ctx);
+    Ok(())
+}
+
+fn evaluate_preload(ctx: &rquickjs::Ctx<'_>, source: &str) -> Result<(), String> {
+    if script_compiles(ctx, source) {
+        return evaluate_script_source(ctx, source);
+    }
+    evaluate_module_source(ctx, source)
+}
+
+fn script_compiles(ctx: &rquickjs::Ctx<'_>, source: &str) -> bool {
+    let Ok(source) = CString::new(source) else {
+        return false;
+    };
+    let flags = (rquickjs::qjs::JS_EVAL_TYPE_GLOBAL
+        | rquickjs::qjs::JS_EVAL_FLAG_STRICT
+        | rquickjs::qjs::JS_EVAL_FLAG_COMPILE_ONLY) as i32;
+    let value = unsafe {
+        rquickjs::qjs::JS_Eval(
+            ctx.as_raw().as_ptr(),
+            source.as_ptr(),
+            source.as_bytes().len() as u64,
+            c"preload".as_ptr(),
+            flags,
+        )
+    };
+    let failed =
+        unsafe { rquickjs::qjs::JS_VALUE_GET_TAG(value) == rquickjs::qjs::JS_TAG_EXCEPTION };
+    unsafe { rquickjs::qjs::JS_FreeValue(ctx.as_raw().as_ptr(), value) };
+    if failed {
+        let _ = ctx.catch();
+    }
+    !failed
+}
+
+fn evaluate_module_source(ctx: &rquickjs::Ctx<'_>, source: &str) -> Result<(), String> {
+    let module = rquickjs::Module::declare(
+        ctx.clone(),
+        "preload".to_string(),
+        source.as_bytes().to_vec(),
+    )
+    .map_err(|error| js_error(ctx, error))?;
+    let (module, _promise) = module.eval().map_err(|error| js_error(ctx, error))?;
+    run_pending_jobs(ctx);
+    let namespace = module.namespace().map_err(|error| js_error(ctx, error))?;
+    expose_namespace(ctx, &namespace)
+}
+
+fn expose_namespace<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    namespace: &rquickjs::Object<'js>,
+) -> Result<(), String> {
+    let globals = ctx.globals();
+    for name in namespace.keys::<String>() {
+        let name = name.map_err(|error| js_error(ctx, error))?;
+        if name == "default" {
+            continue;
+        }
+        let value: rquickjs::Value = namespace
+            .get(name.as_str())
+            .map_err(|error| js_error(ctx, error))?;
+        globals
+            .set(name.as_str(), value)
+            .map_err(|error| js_error(ctx, error))?;
+    }
+    Ok(())
 }
 
 fn evaluate_module(context: &Context, name: &str, source: &str) -> Result<(), String> {
@@ -202,7 +265,7 @@ unsafe fn log_exception(ctx: *mut rquickjs::qjs::JSContext) {
 mod tests {
     use rquickjs::{Context, Runtime};
 
-    use super::{evaluate_module, evaluate_script, run_pending_jobs};
+    use super::{evaluate_module, evaluate_preload, evaluate_script_source, run_pending_jobs};
 
     #[test]
     fn logs_and_continues_after_a_failed_job() {
@@ -234,7 +297,9 @@ mod tests {
     fn module_declarations_do_not_clobber_globals() {
         let runtime = Runtime::new().unwrap();
         let context = Context::full(&runtime).unwrap();
-        evaluate_script(&context, "globalThis.UP = 'global';").unwrap();
+        context
+            .with(|ctx| evaluate_script_source(&ctx, "globalThis.UP = 'global';"))
+            .unwrap();
         evaluate_module(
             &context,
             "game",
@@ -255,10 +320,59 @@ mod tests {
     fn preload_scripts_still_define_globals() {
         let runtime = Runtime::new().unwrap();
         let context = Context::full(&runtime).unwrap();
-        evaluate_script(&context, "globalThis.fromPreload = 3;").unwrap();
         context.with(|ctx| {
+            evaluate_preload(&ctx, "var fromPreload = 3; globalThis.fromPreload = 4;").unwrap();
             let value: i32 = ctx.eval("globalThis.fromPreload").unwrap();
-            assert_eq!(value, 3);
+            assert_eq!(value, 4);
+        });
+    }
+
+    #[test]
+    fn module_preloads_expose_named_exports_as_globals() {
+        let runtime = Runtime::new().unwrap();
+        let context = Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            evaluate_preload(
+                &ctx,
+                "const hidden = 4; export const answer = hidden + 38; export default 'ignored';",
+            )
+            .unwrap();
+            let answer: i32 = ctx.eval("globalThis.answer").unwrap();
+            assert_eq!(answer, 42);
+            let hidden: String = ctx.eval("typeof globalThis.hidden").unwrap();
+            assert_eq!(hidden, "undefined");
+            let default_export: String = ctx.eval("typeof globalThis.default").unwrap();
+            assert_eq!(default_export, "undefined");
+        });
+    }
+
+    #[test]
+    fn module_preloads_fail_through_the_module_path() {
+        let runtime = Runtime::new().unwrap();
+        let context = Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            let error = evaluate_preload(
+                &ctx,
+                "import { missing } from './missing.js'; export const value = missing;",
+            )
+            .unwrap_err();
+            assert!(error.contains("missing.js"), "{error}");
+        });
+    }
+
+    #[test]
+    fn preload_errors_do_not_run_the_source_twice() {
+        let runtime = Runtime::new().unwrap();
+        let context = Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            let error = evaluate_preload(
+                &ctx,
+                "globalThis.preloadRuns = (globalThis.preloadRuns ?? 0) + 1; throw new Error('boom');",
+            )
+            .unwrap_err();
+            assert!(error.contains("boom"), "{error}");
+            let runs: i32 = ctx.eval("globalThis.preloadRuns").unwrap();
+            assert_eq!(runs, 1);
         });
     }
 }
