@@ -26,7 +26,10 @@ Startup runs in four steps:
 
 1. The host installs `__kapNative` and evaluates the shim as a classic script.
 2. `--preload` files (the KAPLAY bundle, for example) are evaluated as classic
-   scripts, so libraries that export globals keep working.
+   scripts, so libraries that export globals keep working. A preload that does
+   not parse as a classic script is evaluated as an ES module instead, and its
+   named exports are copied onto the global object, so ESM-only bundles still
+   provide globals.
 3. The entry is resolved: `--script` if given, otherwise the module script
    referenced by `index.html` in the asset root, otherwise the first of
    `main.js`, `game/main.js`, `index.js` that exists.
@@ -61,8 +64,8 @@ the typed array through the engine's backing store and writes into it directly.
 
 `crates/host/src/js/` owns the engine choice and keeps the rest of the host
 engine-agnostic. `JsRuntime` wraps one of the compiled-in backends and exposes
-`eval_script`, `eval_module`, `drain_jobs`, and `call_global`; `app.rs` calls
-only those. Engine-specific notes:
+`eval_preload`, `eval_module`, `drain_jobs`, and `call_global`; `app.rs` calls
+only those. The engine-specific notes follow:
 
 - QuickJS (`js/quickjs.rs`) owns a `Runtime`/`Context` pair. Native functions
   capture an `Rc<HostState>` per closure and never capture `Ctx`, which avoids

@@ -98,7 +98,7 @@ both. The engines differ in the JavaScript language services they provide:
   `perform_microtask_checkpoint()` with the explicit microtasks policy.
 
 `JsRuntime` exposes the same methods to `app.rs` on both paths:
-`eval_script`, `eval_module`, `drain_jobs`, and `call_global(name, args)`,
+`eval_preload`, `eval_module`, `drain_jobs`, and `call_global(name, args)`,
 where arguments are a small `JsArg` enum (unsigned integer, float, boolean,
 string). Event callbacks from the network and audio threads are dispatched
 through `call_global`, which is why `app.rs` contains no engine-specific code.

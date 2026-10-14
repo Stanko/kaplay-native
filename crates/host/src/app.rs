@@ -597,8 +597,8 @@ impl HostApp {
             }
         }
         for source in preload_sources {
-            if let Err(error) = js.eval_script(&source) {
-                log::error!("script error: {error}");
+            if let Err(error) = js.eval_preload(&source) {
+                log::error!("preload error: {error}");
             }
         }
         if let Some(source) = script_source {
