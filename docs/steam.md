@@ -111,7 +111,13 @@ for games that load Steam state from their own event loops or tests.
 launch preload. It checks the client is running, resolves the library from
 `KAPLAY_NATIVE_STEAM_LIB` or a local SDK copy, writes `steam_appid.txt`, and
 runs the bridge example unless host arguments are passed after `--`. Use
-`--check` to validate the setup without launching.
+`--check` to validate the setup without launching, or `--demo` to run
+`examples/steam`, an on-screen demo of the API: it shows player, stat,
+achievement, and cloud status, and binds Space (cloud write), A (unlock
+`ACH_WIN_ONE_GAME`), S (add a `NumWins` stat and store), and D (cloud delete).
+The demo needs a KAPLAY bundle, resolved from `$KAPLAY_BUNDLE` or a local
+kaplay checkout, and expects app id 480 because it uses Spacewar's achievement
+and stat names.
 
 To exercise the `RestartAppIfNecessary` branch without launching from the
 client, pass `--appid 480` together with `SteamAppId=480 SteamGameId=480` in

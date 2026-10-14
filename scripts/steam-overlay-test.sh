@@ -5,11 +5,13 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(dirname "$script_dir")"
 
 app_id=480
+demo=0
 build=0
 use_debug=0
 check_only=0
 lib=""
 bin=""
+bundle=""
 host_args=()
 
 usage() {
@@ -24,6 +26,8 @@ options:
   --build         build the host before launching
   --debug         use the debug binary instead of the release binary
   --check         validate the setup and exit without launching
+  --demo          run examples/steam instead of the bridge example; the KAPLAY
+                  bundle comes from $KAPLAY_BUNDLE or a local kaplay checkout
   --appid <id>    app id for steam_appid.txt (default: 480, Spacewar)
   --lib <path>    libsteam_api.so to load
   --bin <path>    host binary to run
@@ -41,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --build) build=1; shift ;;
         --debug) use_debug=1; shift ;;
         --check) check_only=1; shift ;;
+        --demo) demo=1; shift ;;
         --appid)
             [[ $# -ge 2 ]] || die "--appid needs a value"
             app_id="$2"
@@ -107,7 +112,29 @@ if [[ "$(cat "$appid_file" 2>/dev/null || true)" != "$app_id" ]]; then
 fi
 
 if [[ ${#host_args[@]} -eq 0 ]]; then
-    host_args=(--script "$repo_root/examples/bridge/main.js" --dir "$repo_root/examples/bridge")
+    if [[ $demo -eq 1 ]]; then
+        bundle="${KAPLAY_BUNDLE:-}"
+        if [[ -z "$bundle" ]]; then
+            for candidate in \
+                "$repo_root/kaplay.js" \
+                "$HOME/Projects/kaplay/dist/kaplay.js" \
+                "$HOME/Projects/kaplay/dist/kaplay.mjs"; do
+                if [[ -f "$candidate" ]]; then
+                    bundle="$candidate"
+                    break
+                fi
+            done
+        fi
+        [[ -n "$bundle" && -f "$bundle" ]] ||
+            die "KAPLAY bundle not found for --demo; set KAPLAY_BUNDLE=/path/to/kaplay.js"
+        host_args=(
+            --script "$repo_root/examples/steam/main.js"
+            --dir "$repo_root/examples/steam"
+            --preload "$bundle"
+        )
+    else
+        host_args=(--script "$repo_root/examples/bridge/main.js" --dir "$repo_root/examples/bridge")
+    fi
 fi
 
 echo "steam-overlay-test: app id   $app_id"
@@ -115,6 +142,7 @@ echo "steam-overlay-test: appid    $appid_file"
 echo "steam-overlay-test: steam    $lib"
 echo "steam-overlay-test: overlay  $overlay"
 echo "steam-overlay-test: host     $bin"
+[[ -n "$bundle" ]] && echo "steam-overlay-test: bundle   $bundle"
 
 if [[ $check_only -eq 1 ]]; then
     echo "steam-overlay-test: setup ok"
