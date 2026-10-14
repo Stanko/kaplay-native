@@ -12,11 +12,13 @@ binary, so every QuickJS game paid for it. Release now ships an engine-specific
 host per platform and the CLI downloads the matching flavor (`-v8` for
 `--js-engine v8`).
 
-| Host | Before | After |
-| --- | --- | --- |
-| QuickJS (default) | 13.8 MB | 11.8 MB |
-| V8 | 60.1 MB | 58.1 MB |
-| QuickJS + V8 (old single artifact) | 61.7 MB | n/a |
+| Host | Before | Engine split | Link-time folding |
+| --- | --- | --- | --- |
+| QuickJS (default) | 13.8 MB | 11.8 MB | 10.6 MB |
+| V8 | 60.1 MB | 58.1 MB | 51.8 MB |
+| QuickJS + V8 (old single artifact) | 61.7 MB | n/a | n/a |
+
+Link-time folding is `panic = "abort"` plus LLD's `--icf=all`; see below.
 
 What the 11.8 MB QuickJS binary spends its text section on, according to
 `cargo bloat`:
@@ -49,6 +51,28 @@ Cargo changes on this branch:
 - `symphonia` drops `all-meta`, `adpcm`, `isomp4` and `aac`. The documented
   formats (WAV, MP3, FLAC, Ogg Vorbis, Opus) are unchanged.
 
+### Link-time folding
+
+`[profile.release]` sets `panic = "abort"`, and Linux hosts are linked with
+LLD and `--icf=all`:
+
+```sh
+RUSTFLAGS="-C force-unwind-tables=no -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=all" \
+  cargo build --release -p kaplay-native-host
+```
+
+Aborting panics delete landing pads and exception tables (~0.8 MB). ICF folds
+functions with identical machine code; V8's own release build enables it
+(`build/config/compiler/BUILD.gn`), so it is compatible with the prebuilt
+archive. On the stripped Linux x64 host this takes V8 from 58.1 MB to
+51.8 MB and QuickJS from 11.8 MB to 10.6 MB. `--gc-sections` is already passed
+by rustc and changes nothing. The tradeoff is that a Rust panic aborts the
+process instead of unwinding, so `catch_unwind` users such as `rquickjs` no
+longer convert panics into JS errors. The flags are applied in `ci.yml` and
+`release.yml`; Linux jobs install `lld` for them. macOS keeps unwinding tables
+because its linker has no `--icf` and Objective-C exceptions can cross Rust
+frames.
+
 ### Inside V8
 
 The `v8` crate exposes only `use_custom_libcxx` (default on, statically links
@@ -57,26 +81,37 @@ libc++), `simdutf`, `v8_enable_pointer_compression`, `v8_enable_sandbox` and
 compression/sandbox flags are memory and security knobs that are off in this
 build. None of them shrink the JS feature set.
 
-The large optional V8 components are GN arguments baked into rusty_v8's
-prebuilt archive, which is what CI downloads (`V8_FROM_SOURCE` is not set):
+The unmodified prebuilt archive is what CI downloads today (`V8_FROM_SOURCE`
+is not set). A linker map of the 51.8 MB host after ICF shows where its code
+and read-only data go:
 
-| Component | Archive symbols | Notes |
-| --- | --- | --- |
-| ICU / `Intl` | ~2.5 MB | locale data and 24 k ICU symbols |
-| WebAssembly | ~2.1 MB | decoder, Liftoff/TurboFan tiers, JS API |
-| Maglev | ~5.7 MB | mid-tier JIT; TurboFan remains |
-| Inspector / debug | ~0.7 MB | CDP bindings, unused by the host |
+| Component | `.text` | `.rodata` | Total |
+| --- | --- | --- | --- |
+| V8 core (runtime, objects, parser, regexp, builtins) | 12.1 MB | 1.3 MB | 13.3 MB |
+| ICU data (`icudtl_dat.o`) | — | 10.4 MB | 10.4 MB |
+| TurboFan / Turboshaft | 4.5 MB | 0.1 MB | 4.6 MB |
+| Embedded builtins snapshot | 2.2 MB | 0.1 MB | 2.3 MB |
+| Maglev | 2.2 MB | 0.1 MB | 2.3 MB |
+| WebAssembly | 2.2 MB | — | 2.2 MB |
+| Rust crates + host | 6.7 MB | 1.2 MB | 7.9 MB |
 
-Probing both engines with `typeof WebAssembly` / `typeof Intl` shows QuickJS has
-neither, while the prebuilt V8 has both. Dropping ICU and WebAssembly from V8
-would therefore *improve* cross-engine parity, at roughly 5–8 MB per V8
-binary, but it requires a from-source V8 build (`V8_FROM_SOURCE=1` plus
-`GN_ARGS`), which is slow on all
-platforms and painful on Windows. The practical route is a separate workflow
-that builds and publishes slim `librusty_v8` archives per platform once per V8
-version, then points the host build at them with `RUSTY_V8_ARCHIVE` or
-`RUSTY_V8_MIRROR`. Disabling Maglev would save more but gives up the JIT tier
-that justifies using V8 at all.
+The single biggest removable piece is not code: `icudtl_dat.o` embeds 10.4 MB
+of ICU locale data. QuickJS has no `Intl`, so dropping i18n at build time also
+improves cross-engine parity. A from-source V8 built with
+
+```sh
+V8_FROM_SOURCE=1 GN_ARGS="v8_enable_i18n_support=false v8_enable_webassembly=false"
+```
+
+would delete the ICU data (~10.4 MB), the WebAssembly tiers (~2.2 MB after
+ICF) and the remaining ICU code (~0.3 MB), landing the V8 host near 39 MB.
+Disabling Maglev would save ~2.3 MB more but removes the mid-tier JIT that
+keeps V8 attractive. The obstacle is infrastructure, not feasibility: the
+crate only ships V8's own sources, so a source build needs a full depot_tools
+checkout (abseil, zlib, Chromium build config) and a 30–60 minute build per
+platform. The practical route is a separate workflow that publishes slim
+`librusty_v8` archives per platform once per V8 version, then points the host
+build at them with `RUSTY_V8_ARCHIVE` or `RUSTY_V8_MIRROR`.
 
 Remaining bundle-size candidates:
 
@@ -91,6 +126,10 @@ Remaining bundle-size candidates:
    V8 could also use a startup snapshot.
 4. **`opt-level = "s"` for dependencies** (`[profile.release.package."*"]`)
    with the hot crates kept at `3`; `lto = "fat"` is worth re-measuring.
+5. **Strip `.eh_frame` after linking.** It survives `strip = true` and still
+   costs ~3.2 MB on the V8 host, almost all of it V8 C++. Removing it saves
+   that much but deletes backtraces and C++ unwinding metadata, so it is only
+   worth it if crash diagnosis does not matter.
 
 ## Threading
 
@@ -182,6 +221,13 @@ Remaining hot-path candidates:
 cargo build --release -p kaplay-native-host
 cargo bloat --release -p kaplay-native-host --crates -n 40
 stat -c '%s' target/release/kaplay-native-host
+```
+
+Slim `--release` builds use the CI flags:
+
+```sh
+RUSTFLAGS="-C force-unwind-tables=no -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=all" \
+  cargo build --release -p kaplay-native-host
 ```
 
 Runtime frame cost, without the vertical-sync wait:

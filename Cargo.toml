@@ -57,3 +57,4 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+panic = "abort"

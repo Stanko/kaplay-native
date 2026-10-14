@@ -86,7 +86,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
             libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 \
-            xvfb
+            xvfb lld
       - name: Install the Mesa software renderer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -96,11 +96,15 @@ jobs:
           Copy-Item mesa/x64/*.dll .
       - name: Build the quickjs host
         run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C force-unwind-tables=no -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=all' || '' }}
       - name: Stage the quickjs host
         shell: bash
         run: cp "target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}" "${{ matrix.asset }}"
       - name: Build the v8 host
         run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host --no-default-features --features v8
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C force-unwind-tables=no -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=all' || '' }}
       - name: Stage the v8 host
         shell: bash
         run: cp "target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}" "${{ matrix.asset_v8 }}"
