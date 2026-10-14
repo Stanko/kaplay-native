@@ -119,6 +119,11 @@ The demo needs a KAPLAY bundle, resolved from `$KAPLAY_BUNDLE` or a local
 kaplay checkout, and expects app id 480 because it uses Spacewar's achievement
 and stat names.
 
+On a Wayland session the script passes `--x11` to the host: Steam's overlay
+renderer loads but never attaches to a native Wayland window, while it hooks
+the GLX context of the XWayland window right away. If you pass your own host
+arguments after `--`, remember to include `--x11` there too.
+
 To exercise the `RestartAppIfNecessary` branch without launching from the
 client, pass `--appid 480` together with `SteamAppId=480 SteamGameId=480` in
 the environment: the call then sees a Steam launch context and returns false.

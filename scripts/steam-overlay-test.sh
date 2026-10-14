@@ -12,6 +12,7 @@ check_only=0
 lib=""
 bin=""
 bundle=""
+x11_args=()
 host_args=()
 
 usage() {
@@ -112,6 +113,9 @@ if [[ "$(cat "$appid_file" 2>/dev/null || true)" != "$app_id" ]]; then
 fi
 
 if [[ ${#host_args[@]} -eq 0 ]]; then
+    if [[ "${XDG_SESSION_TYPE:-}" == "wayland" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+        x11_args=(--x11)
+    fi
     if [[ $demo -eq 1 ]]; then
         bundle="${KAPLAY_BUNDLE:-}"
         if [[ -z "$bundle" ]]; then
@@ -131,9 +135,14 @@ if [[ ${#host_args[@]} -eq 0 ]]; then
             --script "$repo_root/examples/steam/main.js"
             --dir "$repo_root/examples/steam"
             --preload "$bundle"
+            "${x11_args[@]}"
         )
     else
-        host_args=(--script "$repo_root/examples/bridge/main.js" --dir "$repo_root/examples/bridge")
+        host_args=(
+            --script "$repo_root/examples/bridge/main.js"
+            --dir "$repo_root/examples/bridge"
+            "${x11_args[@]}"
+        )
     fi
 fi
 
@@ -143,6 +152,7 @@ echo "steam-overlay-test: steam    $lib"
 echo "steam-overlay-test: overlay  $overlay"
 echo "steam-overlay-test: host     $bin"
 [[ -n "$bundle" ]] && echo "steam-overlay-test: bundle   $bundle"
+[[ ${#x11_args[@]} -gt 0 ]] && echo "steam-overlay-test: backend  x11 (Wayland session)"
 
 if [[ $check_only -eq 1 ]]; then
     echo "steam-overlay-test: setup ok"
@@ -150,6 +160,9 @@ if [[ $check_only -eq 1 ]]; then
 fi
 
 echo "steam-overlay-test: launching; press Shift+Tab once the window is up"
+if [[ ${#x11_args[@]} -eq 0 && ( "${XDG_SESSION_TYPE:-}" == "wayland" || -n "${WAYLAND_DISPLAY:-}" ) ]]; then
+    echo "steam-overlay-test: note: the overlay needs --x11 on Wayland"
+fi
 
 cd "$repo_root"
 export KAPLAY_NATIVE_STEAM_LIB="$lib"
