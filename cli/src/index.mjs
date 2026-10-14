@@ -27,6 +27,7 @@ Commands:
   dev [dir]         Run and restart on file changes
   build [dir]       Bundle a game and pack it into a .pak
   test [dir]        Run a game headlessly and compare a screenshot
+  engines           Print the compiled-in javascript engines
   doctor            Check the local toolchain
 
 Common options:
@@ -47,6 +48,7 @@ Common options:
   --no-vsync        Disable vertical sync (uncapped frame rate)
   --stats           Log the frame rate while the game runs
   --url <url>       Page URL games see as window.location (resolves relative requests)
+  --js-engine <n>   Javascript engine to run (quickjs or v8)
   --x11             Prefer the X11 backend on Linux
 `);
 }
@@ -115,6 +117,7 @@ function hostArgs(options, extra = {}) {
     if (options["no-vsync"]) args.push("--no-vsync");
     if (options.stats) args.push("--stats");
     if (options.url) args.push("--url", options.url);
+    if (options["js-engine"]) args.push("--js-engine", options["js-engine"]);
     if (options.x11) args.push("--x11");
     return args;
 }
@@ -278,6 +281,20 @@ function doctorCommand(options) {
     }
 }
 
+function enginesCommand(options) {
+    const host = findHost(options.host);
+    if (!host) {
+        console.error("kaplay-native-host not found. Build it with `cargo build --release` or pass --host <path>.");
+        process.exit(1);
+    }
+    const result = spawnSync(host, ["--engines"], { encoding: "utf8" });
+    if (result.status !== 0) {
+        console.error(result.stderr || "failed to list javascript engines");
+        process.exit(result.status ?? 1);
+    }
+    process.stdout.write(result.stdout);
+}
+
 const command = process.argv[2];
 const options = parseArgs(process.argv.slice(3));
 
@@ -298,6 +315,9 @@ switch (command) {
         break;
     case "test":
         testCommand(options);
+        break;
+    case "engines":
+        enginesCommand(options);
         break;
     case "doctor":
         doctorCommand(options);

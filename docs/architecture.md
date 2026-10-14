@@ -7,7 +7,7 @@ crates and one JavaScript shim:
 
 | Component | Role |
 | --- | --- |
-| `crates/host` | winit window, glutin GL context, QuickJS runtime, frame loop, bridge |
+| `crates/host` | winit window, glutin GL context, JavaScript engine (QuickJS or V8), frame loop, bridge |
 | `crates/gfx` | `WebGLRenderingContext` over `glow`: object handles, offscreen default framebuffer, `present()` |
 | `crates/canvas2d` | `CanvasRenderingContext2D` over tiny-skia: text, images, pixel ops |
 | `crates/pak` | asset sources: directories and `.pak` (zip) archives |
@@ -57,16 +57,26 @@ and the remaining jobs still run.
 
 Handles are `u32`; `-1` or a missing key means `null` on the JS side. Uploads
 pass caller-owned typed arrays so the shim never copies pixels: the host reads
-the typed array through `as_raw()` and writes into it directly. Native
-functions never allocate JavaScript values and never capture `Ctx`, which
-avoids QuickJS reference cycles (capturing `Ctx` in a closure ends in a
-`JS_FreeRuntime` assertion because the closure then owns a reference to its own
-realm).
+the typed array through the engine's backing store and writes into it directly.
 
-Closures accept at most seven parameters because `rquickjs` only implements
-`FromParams` for tuples up to arity seven. That constraint is why
-`texImage2D` drops the `level` argument (always zero) and infers
-`texSubImage2D` heights from the byte length.
+`crates/host/src/js/` owns the engine choice and keeps the rest of the host
+engine-agnostic. `JsRuntime` wraps one of the compiled-in backends and exposes
+`eval_script`, `eval_module`, `drain_jobs`, and `call_global`; `app.rs` calls
+only those. Engine-specific notes:
+
+- QuickJS (`js/quickjs.rs`) owns a `Runtime`/`Context` pair. Native functions
+  capture an `Rc<HostState>` per closure and never capture `Ctx`, which avoids
+  QuickJS reference cycles (capturing `Ctx` in a closure ends in a
+  `JS_FreeRuntime` assertion because the closure then owns a reference to its
+  own realm). Closures accept at most seven parameters because `rquickjs` only
+  implements `FromParams` for tuples up to arity seven. That constraint is why
+  `texImage2D` drops the `level` argument (always zero) and infers
+  `texSubImage2D` heights from the byte length.
+- V8 (`js/v8_engine.rs`) owns one `OwnedIsolate` on the main thread. A pointer
+  to `HostState` is attached as `Function` data, and every callback recovers it
+  from the callback info, so no closure captures Rust state at all. Evaluations
+  run inside a context scope with the explicit microtasks policy, and the
+  isolate is initialized once per process behind a `Once`.
 
 ## The frame loop
 
@@ -81,9 +91,12 @@ Closures accept at most seven parameters because `rquickjs` only implements
 6. The host presents that framebuffer to the window, aspect-fit with black
    bars, then swaps buffers.
 
-QuickJS has no automatic job pump, so after every evaluation and frame the host
-drains the promise job queue with `Context::execute_pending_job`. Without it,
-promise continuations never run and asset loading stalls at its first `await`.
+Neither engine pumps jobs automatically in the host's frame loop model, so
+after every evaluation and frame the host drains pending work: QuickJS runs
+`JS_ExecutePendingJob` until the queue is empty, and V8 runs
+`perform_microtask_checkpoint()` with the explicit microtasks policy. Without
+this, promise continuations never run and asset loading stalls at its first
+`await`.
 
 ## Network
 
@@ -190,4 +203,6 @@ Everything except presentation is testable headlessly: tests cover the pixel
 helpers, shader translation, font parsing, color parsing, archive reads, and
 the shim's browser semantics against a native stub. The host can run for a
 fixed number of frames and write a screenshot, which makes visual regressions
-checkable in CI with a software GL driver.
+checkable in CI with a software GL driver. CI also builds the V8 backend
+separately and renders the smoke example with both engines, comparing the raw
+frames byte for byte, so the two backends cannot drift apart unnoticed.

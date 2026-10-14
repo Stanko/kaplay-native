@@ -1,7 +1,7 @@
 mod app;
 mod bridge;
 mod config;
-mod jobs;
+mod js;
 mod keys;
 mod screenshots;
 mod state;
@@ -60,6 +60,10 @@ struct Args {
     x11: bool,
     #[arg(long, default_value = "KAPLAY", help = "Window title")]
     title: String,
+    #[arg(long, value_name = "NAME", help = "Javascript engine (quickjs or v8)")]
+    js_engine: Option<String>,
+    #[arg(long, help = "Print the compiled-in javascript engines and exit")]
+    engines: bool,
 }
 
 fn parse_size(value: &str) -> (u32, u32) {
@@ -78,6 +82,25 @@ fn parse_size(value: &str) -> (u32, u32) {
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+
+    if args.engines {
+        for engine in js::available_engines() {
+            println!("{}", engine.name());
+        }
+        return Ok(());
+    }
+
+    let js_engine = match &args.js_engine {
+        Some(name) => match name.parse::<js::JsEngine>() {
+            Ok(engine) if js::available_engines().contains(&engine) => engine,
+            Ok(engine) => anyhow::bail!(
+                "javascript engine '{engine}' is not available in this build (available: {})",
+                js::engine_list()
+            ),
+            Err(error) => anyhow::bail!("{error}"),
+        },
+        None => js::default_engine(),
+    };
 
     let source = match (&args.pak, &args.dir) {
         (Some(pak), _) => AssetSource::from_pak(pak)?,
@@ -118,6 +141,7 @@ fn main() -> anyhow::Result<()> {
         save_dir,
         game_name: args.title,
         url: args.url,
+        js_engine,
     };
 
     HostApp::new(config, std::rc::Rc::new(source))?.run()

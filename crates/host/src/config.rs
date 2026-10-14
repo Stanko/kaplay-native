@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::js::JsEngine;
+
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub script: Option<PathBuf>,
@@ -21,4 +23,5 @@ pub struct HostConfig {
     pub save_dir: PathBuf,
     pub game_name: String,
     pub url: Option<String>,
+    pub js_engine: JsEngine,
 }

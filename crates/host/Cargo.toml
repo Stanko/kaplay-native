@@ -9,6 +9,11 @@ repository.workspace = true
 name = "kaplay-native-host"
 path = "src/main.rs"
 
+[features]
+default = ["quickjs"]
+quickjs = ["dep:rquickjs"]
+v8 = ["dep:v8"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -20,7 +25,8 @@ glutin-winit.workspace = true
 image.workspace = true
 log.workspace = true
 png.workspace = true
-rquickjs.workspace = true
+rquickjs = { workspace = true, optional = true }
+v8 = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 winit.workspace = true

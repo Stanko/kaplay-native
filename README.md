@@ -11,7 +11,7 @@ engine. Nothing in KAPLAY is patched: the runtime installs the globals, then
 loads the game exactly as a browser would.
 
 ```
-game script ──► QuickJS ──► KAPLAY bundle (unchanged)
+game script ──► QuickJS or V8 ──► KAPLAY bundle (unchanged)
                    │
                    ▼
           JS shim (DOM, canvas, WebGL, fetch, storage)
@@ -38,9 +38,12 @@ for the manual validation checklist.
   music, decoding WAV, MP3, FLAC, Ogg Vorbis, and Opus
 - Assets: directory or `.pak` archives
 - Steam: dynamic `steam_api` loading, user, achievements, stats, cloud storage
-- CLI: `run`, `dev`, `build`, `test`, `doctor`
+- Engines: QuickJS by default, optional V8 backend for full modern JS and `Intl`
+- CLI: `run`, `dev`, `build`, `test`, `engines`, `doctor`
 
-Not implemented yet: gamepads, `Intl`, and the Steam Input action manifest.
+Not implemented yet: gamepads and the Steam Input action manifest. QuickJS
+builds have no `Intl`; use the V8 backend for locale-aware APIs. See
+[docs/engines.md](docs/engines.md) for the engine matrix.
 
 ## Quick start
 
@@ -78,6 +81,7 @@ node cli/src/index.mjs run --web-dist ./my-game/dist
 node cli/src/index.mjs dev ./my-game
 node cli/src/index.mjs build ./my-game --out dist/my-game.pak
 node cli/src/index.mjs test ./my-game --update
+node cli/src/index.mjs engines
 node cli/src/index.mjs doctor
 ```
 
@@ -205,11 +209,29 @@ if (kaplayNative.steam.available()) {
 }
 ```
 
+## JavaScript engines
+
+The host ships with QuickJS and can also be built with a V8 backend. Both
+engines evaluate the same shim and the same game, and both implement the full
+`__kapNative` bridge, so games do not change. Pick the engine at build time
+with Cargo features and at runtime with `--js-engine`:
+
+```sh
+cargo build -p kaplay-native-host --features v8
+node cli/src/index.mjs run ./my-game --js-engine v8
+```
+
+`--engines` lists what a host binary was built with. A default build stays
+QuickJS-only; V8 pulls in a prebuilt static V8 binary. The language surface,
+watchdog behavior, and parity checks are covered in
+[docs/engines.md](docs/engines.md).
+
 ## Development
 
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets
+cargo test -p kaplay-native-host --no-default-features --features v8
 node --test shim/test/*.test.js
 ```
 

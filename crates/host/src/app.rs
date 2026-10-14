@@ -17,8 +17,6 @@ use kaplay_native_gfx::GlState;
 use kaplay_native_net::{Network, NetworkEvent};
 use kaplay_native_pak::AssetSource;
 use kaplay_native_steam::SteamApi;
-use rquickjs::function::IntoArgs;
-use rquickjs::{Context, FromJs, Function, Runtime};
 use serde_json::json;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -27,8 +25,8 @@ use winit::keyboard::ModifiersState;
 use winit::raw_window_handle::HasWindowHandle;
 use winit::window::Window;
 
-use crate::bridge;
 use crate::config::HostConfig;
+use crate::js::{JsArg, JsRuntime, Watchdog};
 use crate::keys::KeyState;
 use crate::state::{HostState, PendingMessage};
 
@@ -61,47 +59,29 @@ struct Inner {
     window: Arc<Window>,
     gl_context: PossiblyCurrentContext,
     gl_surface: Surface<WindowSurface>,
-    _runtime: Runtime,
-    js: Context,
+    js: JsRuntime,
     state: Rc<HostState>,
     keys: KeyState,
     caps_lock: Cell<bool>,
     modifiers: ModifiersState,
     cursor_position: Cell<(f64, f64)>,
-    deadline: Rc<Cell<Option<std::time::Instant>>>,
-    phase: Rc<std::cell::RefCell<String>>,
+    watchdog: Arc<Watchdog>,
     last_present: Cell<(i32, i32, i32, i32)>,
     last_resize: Cell<(u32, u32)>,
 }
 
 impl Inner {
     fn mark(&self, phase: &str) {
-        *self.phase.borrow_mut() = phase.to_string();
-        self.deadline.set(Some(
-            std::time::Instant::now() + std::time::Duration::from_secs(4),
-        ));
+        self.watchdog.mark(phase);
     }
 
     fn unmark(&self) {
-        self.deadline.set(None);
+        self.watchdog.unmark();
     }
 
     fn drain(&self) {
         self.mark("drain");
-        self.js.with(|ctx| {
-            let jobs = crate::jobs::run_pending_jobs(&ctx);
-            if jobs >= crate::jobs::MAX_PENDING_JOBS {
-                log::warn!("stopped after {jobs} pending jobs");
-            }
-            let pending: rquickjs::Value = ctx.catch();
-            if let Some(exception) = pending.as_exception() {
-                log::error!(
-                    "drain exception: {} :: {}",
-                    exception.message().unwrap_or_default(),
-                    exception.stack().unwrap_or_default()
-                );
-            }
-        });
+        self.js.drain_jobs();
         self.unmark();
     }
 
@@ -118,17 +98,22 @@ impl Inner {
                 } => {
                     let ok = error.is_none();
                     let message = error.unwrap_or_default();
-                    if let Err(error) = call_global::<_, ()>(
-                        &self.js,
+                    if let Err(error) = self.js.call_global(
                         "__kapNative_onAudioDecoded",
-                        (request, buffer, ok, message),
+                        &[
+                            JsArg::Uint(request),
+                            JsArg::Uint(buffer),
+                            JsArg::Bool(ok),
+                            JsArg::Str(&message),
+                        ],
                     ) {
                         log::error!("audio decode callback {request}: {error}");
                     }
                 }
                 AudioEvent::VoiceEnded { voice } => {
-                    if let Err(error) =
-                        call_global::<_, ()>(&self.js, "__kapNative_onVoiceEnded", (voice,))
+                    if let Err(error) = self
+                        .js
+                        .call_global("__kapNative_onVoiceEnded", &[JsArg::Uint(voice)])
                     {
                         log::error!("audio ended callback {voice}: {error}");
                     }
@@ -165,10 +150,17 @@ impl Inner {
                 let length = response.body.len();
                 let ok = (200..300).contains(&status);
                 *self.state.pending_response.borrow_mut() = Some(response);
-                let result = call_global::<_, ()>(
-                    &self.js,
+                let result = self.js.call_global(
                     "__kapNative_onFetch",
-                    (id, url, status, status_text, headers, length, ok),
+                    &[
+                        JsArg::Uint(id),
+                        JsArg::Str(&url),
+                        JsArg::Uint(u32::from(status)),
+                        JsArg::Str(&status_text),
+                        JsArg::Str(&headers),
+                        JsArg::Uint(u32::try_from(length).unwrap_or(u32::MAX)),
+                        JsArg::Bool(ok),
+                    ],
                 );
                 self.state.pending_response.borrow_mut().take();
                 if let Err(error) = result {
@@ -177,15 +169,17 @@ impl Inner {
             }
             NetworkEvent::FetchError { id, message } => {
                 log::debug!("fetch {id} failed: {message}");
-                if let Err(error) =
-                    call_global::<_, ()>(&self.js, "__kapNative_onFetchError", (id, message))
-                {
+                if let Err(error) = self.js.call_global(
+                    "__kapNative_onFetchError",
+                    &[JsArg::Uint(id), JsArg::Str(&message)],
+                ) {
                     log::error!("fetch callback {id}: {error}");
                 }
             }
             NetworkEvent::SocketOpened { id } => {
-                if let Err(error) =
-                    call_global::<_, ()>(&self.js, "__kapNative_onSocketOpen", (id,))
+                if let Err(error) = self
+                    .js
+                    .call_global("__kapNative_onSocketOpen", &[JsArg::Uint(id)])
                 {
                     log::error!("socket callback {id}: {error}");
                 }
@@ -194,10 +188,13 @@ impl Inner {
                 let length = data.len();
                 *self.state.pending_message.borrow_mut() =
                     Some(PendingMessage { socket: id, data });
-                let result = call_global::<_, ()>(
-                    &self.js,
+                let result = self.js.call_global(
                     "__kapNative_onSocketMessage",
-                    (id, length, text),
+                    &[
+                        JsArg::Uint(id),
+                        JsArg::Uint(u32::try_from(length).unwrap_or(u32::MAX)),
+                        JsArg::Bool(text),
+                    ],
                 );
                 self.state.pending_message.borrow_mut().take();
                 if let Err(error) = result {
@@ -206,17 +203,23 @@ impl Inner {
             }
             NetworkEvent::SocketClosed { id, code, reason } => {
                 log::debug!("socket {id} closed: {code} {reason}");
-                if let Err(error) =
-                    call_global::<_, ()>(&self.js, "__kapNative_onSocketClose", (id, code, reason))
-                {
+                if let Err(error) = self.js.call_global(
+                    "__kapNative_onSocketClose",
+                    &[
+                        JsArg::Uint(id),
+                        JsArg::Uint(u32::from(code)),
+                        JsArg::Str(&reason),
+                    ],
+                ) {
                     log::error!("socket callback {id}: {error}");
                 }
             }
             NetworkEvent::SocketError { id, message } => {
                 log::debug!("socket {id} error: {message}");
-                if let Err(error) =
-                    call_global::<_, ()>(&self.js, "__kapNative_onSocketError", (id, message))
-                {
+                if let Err(error) = self.js.call_global(
+                    "__kapNative_onSocketError",
+                    &[JsArg::Uint(id), JsArg::Str(&message)],
+                ) {
                     log::error!("socket callback {id}: {error}");
                 }
             }
@@ -226,15 +229,10 @@ impl Inner {
     fn dispatch(&self, event: &str, payload: serde_json::Value) {
         let payload = payload.to_string();
         let event = event.to_string();
-        let result = self.js.with(|ctx| -> Result<(), String> {
-            let dispatch: Function = ctx
-                .globals()
-                .get("__kapNative_dispatch")
-                .map_err(|error| js_error(&ctx, error))?;
-            dispatch
-                .call::<(String, String), ()>((event.clone(), payload))
-                .map_err(|error| js_error(&ctx, error))
-        });
+        let result = self.js.call_global(
+            "__kapNative_dispatch",
+            &[JsArg::Str(&event), JsArg::Str(&payload)],
+        );
         if let Err(error) = result {
             log::error!("dispatch {event}: {error}");
         }
@@ -271,15 +269,9 @@ impl Inner {
         self.pump_audio();
         let now = self.state.now_ms();
         self.mark("frame update");
-        let result = self.js.with(|ctx| -> Result<(), String> {
-            let frame: Function = ctx
-                .globals()
-                .get("__kapNative_onFrame")
-                .map_err(|error| js_error(&ctx, error))?;
-            frame
-                .call::<(f64,), ()>((now,))
-                .map_err(|error| js_error(&ctx, error))
-        });
+        let result = self
+            .js
+            .call_global("__kapNative_onFrame", &[JsArg::Float(now)]);
         self.unmark();
         if let Err(error) = result {
             log::error!("frame: {error}");
@@ -360,26 +352,6 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-fn evaluate_script(js: &Context, source: &str) -> Result<(), String> {
-    js.with(|ctx| {
-        ctx.eval::<(), _>(source.as_bytes())
-            .map_err(|error| js_error(&ctx, error))?;
-        crate::jobs::run_pending_jobs(&ctx);
-        Ok(())
-    })
-}
-
-fn evaluate_module(js: &Context, name: &str, source: &str) -> Result<(), String> {
-    js.with(|ctx| {
-        let module =
-            rquickjs::Module::declare(ctx.clone(), name.to_string(), source.as_bytes().to_vec())
-                .map_err(|error| js_error(&ctx, error))?;
-        module.eval().map_err(|error| js_error(&ctx, error))?;
-        crate::jobs::run_pending_jobs(&ctx);
-        Ok(())
-    })
-}
-
 fn gl_version(display: &impl GlDisplay) -> Option<(u32, u32)> {
     let pointer = display.get_proc_address(c"glGetString");
     if pointer.is_null() {
@@ -400,33 +372,6 @@ fn gl_version(display: &impl GlDisplay) -> Option<(u32, u32)> {
     let major = parts.next()?;
     let minor = parts.next()?;
     Some((major, minor))
-}
-
-fn js_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> String {
-    let pending: rquickjs::Value = ctx.catch();
-    if let Some(exception) = pending.as_exception() {
-        let message = exception.message().unwrap_or_default();
-        let stack = exception.stack().unwrap_or_default();
-        if stack.is_empty() {
-            return message;
-        }
-        return format!("{message}\n{stack}");
-    }
-    error.to_string()
-}
-
-fn call_global<A, R>(js: &Context, name: &str, args: A) -> Result<R, String>
-where
-    A: for<'js> IntoArgs<'js>,
-    R: for<'js> FromJs<'js>,
-{
-    js.with(|ctx| -> Result<R, String> {
-        let function: Function = ctx
-            .globals()
-            .get(name)
-            .map_err(|error| js_error(&ctx, error))?;
-        function.call(args).map_err(|error| js_error(&ctx, error))
-    })
 }
 
 impl HostApp {
@@ -610,57 +555,22 @@ impl HostApp {
             window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
 
-        let runtime = Runtime::new().ok()?;
-        let deadline = Rc::new(Cell::new(None));
-        let phase = Rc::new(std::cell::RefCell::new(String::new()));
-        if std::env::var_os("KAPLAY_NATIVE_WATCHDOG").is_some() {
-            let deadline = deadline.clone();
-            let phase = phase.clone();
-            runtime.set_interrupt_handler(Some(Box::new(move || {
-                let expired = deadline
-                    .get()
-                    .is_some_and(|limit| std::time::Instant::now() > limit);
-                if expired {
-                    static REPORTED: std::sync::atomic::AtomicBool =
-                        std::sync::atomic::AtomicBool::new(false);
-                    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        log::error!(
-                            "interrupting long-running javascript during {}",
-                            phase.borrow()
-                        );
-                    }
-                    return true;
-                }
-                false
-            })));
-        }
-        runtime.set_host_promise_rejection_tracker(Some(Box::new(
-            |_ctx, _promise, reason, handled| {
-                if handled {
-                    return;
-                }
-                if let Some(exception) = reason.as_exception() {
-                    log::error!(
-                        "unhandled rejection: {} :: {}",
-                        exception.message().unwrap_or_default(),
-                        exception.stack().unwrap_or_default()
-                    );
-                } else {
-                    log::error!("unhandled rejection (non-error)");
-                }
-            },
-        )));
-        let js = Context::full(&runtime).ok()?;
+        let watchdog = Watchdog::new();
         if let Some(app_id) = self.config.app_id {
             log::info!("steam app id: {app_id}");
         }
-        let installed = js.with(|ctx| {
-            bridge::install(&ctx, state.clone(), SHIM).map_err(|error| error.to_string())
-        });
-        if let Err(error) = installed {
-            log::error!("failed to initialise runtime: {error}");
-            event_loop.exit();
-            return None;
+        let js = match JsRuntime::new(self.config.js_engine, state.clone(), SHIM, watchdog.clone())
+        {
+            Ok(js) => js,
+            Err(error) => {
+                log::error!("failed to initialise runtime: {error}");
+                event_loop.exit();
+                return None;
+            }
+        };
+        match js.version() {
+            Some(version) => log::info!("javascript engine: {} {version}", js.name()),
+            None => log::info!("javascript engine: {}", js.name()),
         }
 
         let preloads = self.config.preload.clone();
@@ -687,12 +597,12 @@ impl HostApp {
             }
         }
         for source in preload_sources {
-            if let Err(error) = evaluate_script(&js, &source) {
+            if let Err(error) = js.eval_script(&source) {
                 log::error!("script error: {error}");
             }
         }
         if let Some(source) = script_source {
-            if let Err(error) = evaluate_module(&js, "game", &source) {
+            if let Err(error) = js.eval_module("game", &source) {
                 log::error!("script error: {error}");
             }
         }
@@ -702,15 +612,13 @@ impl HostApp {
             window,
             gl_context,
             gl_surface: surface,
-            _runtime: runtime,
             js,
             state,
             keys: KeyState::new(),
             caps_lock: Cell::new(false),
             modifiers: ModifiersState::empty(),
             cursor_position: Cell::new((0.0, 0.0)),
-            deadline,
-            phase,
+            watchdog,
             last_present: Cell::new((0, 0, 0, 0)),
             last_resize: Cell::new((initial_size.width, initial_size.height)),
         })
@@ -935,9 +843,7 @@ impl ApplicationHandler for HostApp {
 
 #[cfg(test)]
 mod tests {
-    use rquickjs::{Context, Runtime};
-
-    use super::{evaluate_module, evaluate_script, find_module_entry, percentile};
+    use super::{find_module_entry, percentile};
 
     #[test]
     fn percentiles_land_on_expected_samples() {
@@ -971,37 +877,5 @@ mod tests {
             Some("main.js".to_string())
         );
         assert_eq!(find_module_entry("<html></html>"), None);
-    }
-
-    #[test]
-    fn module_declarations_do_not_clobber_globals() {
-        let runtime = Runtime::new().unwrap();
-        let context = Context::full(&runtime).unwrap();
-        evaluate_script(&context, "globalThis.UP = 'global';").unwrap();
-        evaluate_module(
-            &context,
-            "game",
-            "function UP() { return 7; } globalThis.result = UP(); var leaked = 1;",
-        )
-        .unwrap();
-        context.with(|ctx| {
-            let kept: String = ctx.eval("globalThis.UP").unwrap();
-            let result: i32 = ctx.eval("globalThis.result").unwrap();
-            let leaked: String = ctx.eval("typeof globalThis.leaked").unwrap();
-            assert_eq!(kept, "global");
-            assert_eq!(result, 7);
-            assert_eq!(leaked, "undefined");
-        });
-    }
-
-    #[test]
-    fn preload_scripts_still_define_globals() {
-        let runtime = Runtime::new().unwrap();
-        let context = Context::full(&runtime).unwrap();
-        evaluate_script(&context, "globalThis.fromPreload = 3;").unwrap();
-        context.with(|ctx| {
-            let value: i32 = ctx.eval("globalThis.fromPreload").unwrap();
-            assert_eq!(value, 3);
-        });
     }
 }
