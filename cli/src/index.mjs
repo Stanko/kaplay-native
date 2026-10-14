@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import {
+    chmodSync,
     copyFileSync,
     existsSync,
     mkdirSync,
@@ -10,6 +11,7 @@ import {
     watch,
     writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,7 +19,43 @@ import { createZip } from "./zip.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
+const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8"));
+const GITHUB_REPO = "beemdvp/kaplay-native";
 const hostName = process.platform === "win32" ? "kaplay-native-host.exe" : "kaplay-native-host";
+const TRAILER_MAGIC = "KNATIVEP";
+const TRAILER_VERSION = 1;
+
+function platformTag() {
+    const tags = {
+        "linux-x64": "linux-x64",
+        "linux-arm64": "linux-arm64",
+        "darwin-x64": "macos-x64",
+        "darwin-arm64": "macos-arm64",
+        "win32-x64": "windows-x64",
+    };
+    return tags[`${process.platform}-${process.arch}`] ?? null;
+}
+
+function hostAssetName() {
+    const tag = platformTag();
+    if (!tag) return null;
+    return `kaplay-native-host-${tag}${tag.startsWith("windows") ? ".exe" : ""}`;
+}
+
+function cacheDir() {
+    if (process.env.KAPLAY_NATIVE_CACHE) {
+        return join(process.env.KAPLAY_NATIVE_CACHE, pkg.version);
+    }
+    if (process.platform === "win32") {
+        const base = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+        return join(base, "kaplay-native", pkg.version);
+    }
+    if (process.platform === "darwin") {
+        return join(homedir(), "Library", "Caches", "kaplay-native", pkg.version);
+    }
+    const base = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
+    return join(base, "kaplay-native", pkg.version);
+}
 
 function usage() {
     console.log(`kaplay-native <command> [options]
@@ -26,20 +64,25 @@ Commands:
   run [dir]         Run a game from a directory
   dev [dir]         Run and restart on file changes
   build [dir]       Bundle a game and pack it into a .pak
+  pack [dir]        Build a game into a single-file executable for this platform
   test [dir]        Run a game headlessly and compare a screenshot
   engines           Print the compiled-in javascript engines
   doctor            Check the local toolchain
 
+Packaged binaries:
+  pack writes <dir> assets and a small config into a copy of the host binary,
+  so the result runs on its own with no extra files.
+
 Common options:
   --host <path>     Path to the kaplay-native-host binary
-  --pak <path>      Run or write a .pak archive
+  --pak <path>      Run or read a .pak archive
   --entry <file>    Game entry script (default: main.js)
   --web-dist <dir>  Run a web build directory (Vite/Rollup output, uses its index.html entry)
   --preload <file>  Script evaluated before the entry (repeatable)
   --window <WxH>    Window size (default: 960x540)
   --frames <n>      Exit after n frames
   --screenshot <p>  Write a screenshot on exit
-  --out <path>      Output path for build
+  --out <path>      Output path for build and pack
   --headless        Do not show a window
   --fullscreen      Start fullscreen
   --title <name>    Window title
@@ -48,7 +91,7 @@ Common options:
   --no-vsync        Disable vertical sync (uncapped frame rate)
   --stats           Log the frame rate while the game runs
   --url <url>       Page URL games see as window.location (resolves relative requests)
-  --js-engine <n>   Javascript engine to run (quickjs or v8)
+  --js-engine <n>   Javascript engine to run or embed (quickjs or v8)
   --x11             Prefer the X11 backend on Linux
 `);
 }
@@ -82,7 +125,33 @@ function which(binary) {
     return result.status === 0 ? binary : null;
 }
 
-function findHost(explicit) {
+async function downloadHost() {
+    const asset = hostAssetName();
+    if (!asset) {
+        console.error(`no prebuilt host for ${process.platform}-${process.arch}`);
+        return null;
+    }
+    const url = `https://github.com/${GITHUB_REPO}/releases/download/v${pkg.version}/${asset}`;
+    console.log(`downloading ${url}`);
+    try {
+        const response = await fetch(url, { redirect: "follow" });
+        if (!response.ok) {
+            console.error(`failed to download the host binary: HTTP ${response.status} from ${url}`);
+            return null;
+        }
+        const bytes = Buffer.from(await response.arrayBuffer());
+        const dest = join(cacheDir(), asset);
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, bytes);
+        if (process.platform !== "win32") chmodSync(dest, 0o755);
+        return dest;
+    } catch (error) {
+        console.error(`failed to download the host binary: ${error.message}`);
+        return null;
+    }
+}
+
+async function findHost(explicit) {
     const candidates = [
         explicit,
         process.env.KAPLAY_NATIVE_HOST,
@@ -96,7 +165,21 @@ function findHost(explicit) {
             return candidate;
         }
     }
-    return which(hostName);
+    const onPath = which(hostName);
+    if (onPath) return onPath;
+    const asset = hostAssetName();
+    const cached = asset ? join(cacheDir(), asset) : null;
+    if (cached && existsSync(cached)) return cached;
+    return downloadHost();
+}
+
+async function requireHost(explicit) {
+    const host = await findHost(explicit);
+    if (!host) {
+        console.error("kaplay-native-host not found. Build it with `cargo build --release`, pass --host <path>, or let the CLI download a release.");
+        process.exit(1);
+    }
+    return host;
 }
 
 function hostArgs(options, extra = {}) {
@@ -131,12 +214,8 @@ function gameDir(options) {
     return dir;
 }
 
-function withHost(options, args, { capture = false } = {}) {
-    const host = findHost(options.host);
-    if (!host) {
-        console.error("kaplay-native-host not found. Build it with `cargo build --release` or pass --host <path>.");
-        process.exit(1);
-    }
+async function withHost(options, args, { capture = false } = {}) {
+    const host = await requireHost(options.host);
     if (capture) {
         return spawnSync(host, args, { encoding: "utf8" });
     }
@@ -154,18 +233,17 @@ function autoPreload(dir, options) {
     return options;
 }
 
-function runCommand(options) {
+async function runCommand(options) {
     const dir = gameDir(options);
-    withHost(autoPreload(dir, options), hostArgs(options, { dir }));
+    await withHost(autoPreload(dir, options), hostArgs(options, { dir }));
 }
 
-function devCommand(options) {
+async function devCommand(options) {
     const dir = gameDir(options);
     const base = autoPreload(dir, options);
+    const host = await requireHost(options.host);
     const start = () => {
-        const child = spawn(findHost(options.host) ?? "kaplay-native-host", hostArgs(base, { dir }), {
-            stdio: "inherit",
-        });
+        const child = spawn(host, hostArgs(base, { dir }), { stdio: "inherit" });
         child.on("exit", () => {});
         return child;
     };
@@ -211,10 +289,7 @@ async function bundle(entry, outfile) {
     return true;
 }
 
-async function buildCommand(options) {
-    const dir = gameDir(options);
-    const out = options.out ? resolve(options.out) : join(dir, "dist", `${basename(dir)}.pak`);
-    mkdirSync(dirname(out), { recursive: true });
+async function createPak(dir, options) {
     const entryName = options.entry ?? "main.js";
     let bundled = false;
     if (options.bundle !== false) {
@@ -228,17 +303,86 @@ async function buildCommand(options) {
         files.push({ name: entryName, path: join(dir, ".kaplay-native-bundle.js") });
     }
     const entries = files.map((file) => ({ name: file.name, data: readFileSync(file.path) }));
-    writeFileSync(out, createZip(entries));
-    console.log(`packed ${entries.length} files into ${out}${bundled ? " (bundled with esbuild)" : ""}`);
+    return { bytes: createZip(entries), count: entries.length, bundled };
 }
 
-function testCommand(options) {
+async function buildCommand(options) {
+    const dir = gameDir(options);
+    const out = options.out ? resolve(options.out) : join(dir, "dist", `${basename(dir)}.pak`);
+    mkdirSync(dirname(out), { recursive: true });
+    const pak = await createPak(dir, options);
+    writeFileSync(out, pak.bytes);
+    console.log(`packed ${pak.count} files into ${out}${pak.bundled ? " (bundled with esbuild)" : ""}`);
+}
+
+function isMachO(buffer) {
+    if (buffer.length < 4) return false;
+    const magic = new Set([0xfeedface, 0xfeedfacf, 0xcafebabe, 0xcefaedfe, 0xcffaedfe, 0xbebafeca]);
+    return magic.has(buffer.readUInt32BE(0)) || magic.has(buffer.readUInt32LE(0));
+}
+
+function adhocSign(path, hostBytes) {
+    if (!isMachO(hostBytes)) return;
+    const result = spawnSync("codesign", ["--force", "--sign", "-", path], { encoding: "utf8" });
+    if (result.error) {
+        console.warn(`codesign is unavailable; sign ${path} manually before shipping it`);
+    } else if (result.status !== 0) {
+        console.warn(`codesign failed: ${(result.stderr || "").trim()}`);
+    }
+}
+
+async function packCommand(options) {
+    let dir = null;
+    let pakBytes = null;
+    let count = 0;
+    let bundled = false;
+    let name = "game";
+    if (options.pak) {
+        const source = resolve(options.pak);
+        if (!existsSync(source)) {
+            console.error(`pak archive not found: ${source}`);
+            process.exit(1);
+        }
+        pakBytes = readFileSync(source);
+        name = basename(source).replace(/\.pak$/i, "");
+    } else {
+        dir = gameDir(options);
+        name = basename(dir);
+        ({ bytes: pakBytes, count, bundled } = await createPak(dir, options));
+    }
+    const host = await requireHost(options.host);
+    const tag = platformTag() ?? "unknown";
+    const base = options.out ? resolve(options.out) : join(dir ?? process.cwd(), "dist", `${name}-${tag}`);
+    const out = process.platform === "win32" && !base.endsWith(".exe") ? `${base}.exe` : base;
+    mkdirSync(dirname(out), { recursive: true });
+    const config = {};
+    if (options["js-engine"]) config.jsEngine = options["js-engine"];
+    if (options.title) config.title = options.title;
+    if (options.window) config.window = options.window;
+    if (options["allow-network"]) config.network = true;
+    if (options.url) config.url = options.url;
+    const configBytes = Buffer.from(JSON.stringify(config), "utf8");
+    const trailer = Buffer.alloc(24);
+    trailer.write(TRAILER_MAGIC, 0, "ascii");
+    trailer.writeUInt32LE(TRAILER_VERSION, 8);
+    trailer.writeBigUInt64LE(BigInt(pakBytes.length), 12);
+    trailer.writeUInt32LE(configBytes.length, 20);
+    const hostBytes = readFileSync(host);
+    writeFileSync(out, Buffer.concat([hostBytes, pakBytes, configBytes, trailer]));
+    if (process.platform !== "win32") chmodSync(out, 0o755);
+    adhocSign(out, hostBytes);
+    const summary = options.pak ? `embedded ${basename(options.pak)}` : `packed ${count} files`;
+    console.log(`${summary} into ${out}${bundled ? " (bundled with esbuild)" : ""}`);
+    console.log(`run it with: ${out}`);
+}
+
+async function testCommand(options) {
     const dir = gameDir(options);
     const screenshot = resolve(options.screenshot ?? join(dir, "test", "actual.png"));
     const golden = resolve(options.golden ?? join(dir, "test", "golden.png"));
     mkdirSync(dirname(screenshot), { recursive: true });
     const args = hostArgs({ ...options, frames: options.frames ?? 120, screenshot, headless: true }, { dir });
-    const result = withHost(options, args, { capture: true });
+    const result = await withHost(options, args, { capture: true });
     if (result.status !== 0) {
         console.error(result.stdout);
         console.error(result.stderr);
@@ -264,11 +408,13 @@ function testCommand(options) {
     process.exit(1);
 }
 
-function doctorCommand(options) {
+async function doctorCommand(options) {
     const checks = [];
     checks.push(["node", process.version]);
     checks.push(["platform", `${process.platform} ${process.arch}`]);
-    const host = findHost(options.host);
+    checks.push(["host release", hostAssetName() ?? "unsupported"]);
+    checks.push(["host cache", cacheDir()]);
+    const host = await findHost(options.host);
     checks.push(["host binary", host ?? "not found"]);
     checks.push(["DISPLAY", process.env.DISPLAY ?? "(unset)"]);
     checks.push(["WAYLAND_DISPLAY", process.env.WAYLAND_DISPLAY ?? "(unset)"]);
@@ -281,12 +427,8 @@ function doctorCommand(options) {
     }
 }
 
-function enginesCommand(options) {
-    const host = findHost(options.host);
-    if (!host) {
-        console.error("kaplay-native-host not found. Build it with `cargo build --release` or pass --host <path>.");
-        process.exit(1);
-    }
+async function enginesCommand(options) {
+    const host = await requireHost(options.host);
     const result = spawnSync(host, ["--engines"], { encoding: "utf8" });
     if (result.status !== 0) {
         console.error(result.stderr || "failed to list javascript engines");
@@ -305,22 +447,25 @@ if (!command || options.help) {
 
 switch (command) {
     case "run":
-        runCommand(options);
+        await runCommand(options);
         break;
     case "dev":
-        devCommand(options);
+        await devCommand(options);
         break;
     case "build":
         await buildCommand(options);
         break;
+    case "pack":
+        await packCommand(options);
+        break;
     case "test":
-        testCommand(options);
+        await testCommand(options);
         break;
     case "engines":
-        enginesCommand(options);
+        await enginesCommand(options);
         break;
     case "doctor":
-        doctorCommand(options);
+        await doctorCommand(options);
         break;
     default:
         console.error(`unknown command: ${command}`);

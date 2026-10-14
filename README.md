@@ -39,7 +39,7 @@ for the manual validation checklist.
 - Assets: directory or `.pak` archives
 - Steam: dynamic `steam_api` loading, user, achievements, stats, cloud storage
 - Engines: QuickJS by default, optional V8 backend for full modern JS and `Intl`
-- CLI: `run`, `dev`, `build`, `test`, `engines`, `doctor`
+- CLI: `run`, `dev`, `build`, `pack`, `test`, `engines`, `doctor`
 
 Not implemented yet: gamepads and the Steam Input action manifest. QuickJS
 builds have no `Intl`; use the V8 backend for locale-aware APIs. See
@@ -64,6 +64,13 @@ target/release/kaplay-native-host \
   --window 960x540
 ```
 
+With the npm CLI installed, no local checkout is needed:
+
+```sh
+npm install --global kaplay-native
+kaplay-native pack ./my-game --js-engine v8
+```
+
 The headless smoke test uses raw WebGL, so it needs no preload:
 
 ```sh
@@ -81,12 +88,32 @@ node cli/src/index.mjs run --web-dist ./my-game/dist
 node cli/src/index.mjs dev ./my-game
 node cli/src/index.mjs build ./my-game --out dist/my-game.pak
 node cli/src/index.mjs test ./my-game --update
+node cli/src/index.mjs pack ./my-game --out dist/my-game --js-engine v8
 node cli/src/index.mjs engines
 node cli/src/index.mjs doctor
 ```
 
 The host binary is found with `--host`, `KAPLAY_NATIVE_HOST`, next to the CLI,
 or on `PATH`.
+
+## Distributing a game
+
+`pack` turns a game into a single-file executable for the current platform: a
+copy of the host with the game archive and a config record appended, so the
+player needs nothing else. The config embeds the defaults a double-clicked game
+cannot pass on the command line, including the engine, window title and size,
+and network settings:
+
+```sh
+node cli/src/index.mjs pack ./my-game --out dist/my-game \
+  --js-engine v8 --allow-network --url https://my-game.example.com
+```
+
+The same command is available from the published npm CLI, which downloads the
+matching host binary on first use, and a GitHub Actions workflow can produce
+artifacts for Linux, Windows, and macOS in one matrix. Builds, run-time
+overrides, the packed format, and a copy-paste release workflow are documented
+in [docs/distribution.md](docs/distribution.md).
 
 ## Running a web build
 

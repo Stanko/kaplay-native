@@ -62,6 +62,10 @@ node cli/src/index.mjs run ./my-game --js-engine quickjs
 only that engine and fails at startup when asked for the other. When both are
 compiled in, the default is QuickJS.
 
+`kaplay-native pack --js-engine v8` embeds the choice in a distributed game, so
+a packed binary starts with V8 without any flags; see
+[distribution.md](distribution.md).
+
 ## Behavior differences
 
 The bridge and the shim are engine-independent, so games behave the same on

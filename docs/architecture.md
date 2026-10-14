@@ -191,7 +191,8 @@ Premultiplication and vertical flips follow `pixelStorei` state, tracked in
 
 ## Assets
 
-`crates/pak` reads either a directory or a `.pak` zip. Paths are normalized:
+`crates/pak` reads a directory or a `.pak` zip, including one embedded in the
+host executable by `kaplay-native pack`. Paths are normalized:
 query strings and hashes are stripped, `..` is rejected, and resolved paths
 must stay inside the asset root. Asset reads are synchronous on the JS side
 (`fetch` and `Image` perform the read, then resolve the promise, matching

@@ -1,0 +1,166 @@
+# Distributing games
+
+A shipped game is a single executable per platform: the `kaplay-native-host`
+binary with your game archive and a small config appended to it. There is no
+runtime to install and no extra files next to it.
+
+## Install the CLI
+
+```sh
+npm install --global kaplay-native
+kaplay-native --help
+```
+
+Or run it without installing:
+
+```sh
+npx --yes kaplay-native pack ./my-game
+```
+
+The CLI is a thin Node script. When a command needs the native host and none is
+found locally, it downloads the host binary for the current platform from the
+GitHub release that matches the CLI version and caches it:
+
+- Linux: `~/.cache/kaplay-native/<version>` (or `$XDG_CACHE_HOME`)
+- macOS: `~/Library/Caches/kaplay-native/<version>`
+- Windows: `%LOCALAPPDATA%\kaplay-native\<version>`
+
+Overrides: `--host <path>`, `KAPLAY_NATIVE_HOST`, and `KAPLAY_NATIVE_CACHE`.
+`kaplay-native doctor` prints which host was resolved and where it came from.
+
+## Pack a game
+
+```sh
+kaplay-native pack ./my-game --out dist/my-game --js-engine v8
+```
+
+`pack` bundles the game the same way `build` does (esbuild when available),
+embeds the archive and config in a copy of the host, and marks the result
+executable. On Windows the output gets a `.exe` suffix automatically.
+
+Options that change what the game does when launched:
+
+| Flag | Effect |
+| --- | --- |
+| `--js-engine quickjs\|v8` | Default engine for this binary |
+| `--title <name>` | Window title |
+| `--window <WxH>` | Initial window size |
+| `--allow-network` | Enable HTTP and WebSocket requests |
+| `--url <url>` | Page URL for `window.location` and relative requests |
+
+Everything else (`--host`, `--out`, `--entry`, `--web-dist`, `--pak`) controls
+packaging itself. Pack from an existing archive with `--pak game.pak`.
+
+At runtime the embedded defaults sit between the command line and the built-in
+defaults, so all of these still work on a packed game:
+
+```sh
+./my-game --window 1280x720 --stats
+./my-game --pak other-game.pak
+./my-game --screenshot frame.png --frames 120
+```
+
+If the game ships with a backend, pack with `--allow-network` and `--url` so
+double-clicking the game connects without extra flags.
+
+## The packed format
+
+The output is the host executable followed by three records:
+
+```
+[host executable][game .pak][config JSON][trailer: 24 bytes]
+```
+
+The trailer is little-endian:
+
+| Offset | Size | Value |
+| --- | --- | --- |
+| 0 | 8 | `KNATIVEP` |
+| 8 | 4 | format version (`1`) |
+| 12 | 8 | pak length in bytes |
+| 20 | 4 | config length in bytes |
+
+The config is a JSON object; every key is optional: `jsEngine`, `title`,
+`window`, `network`, `url`. Explicit command-line flags win over the config,
+which wins over the host defaults. A `--pak` or `--dir` argument also
+overrides the embedded archive, which is useful for testing a new build against
+an existing binary.
+
+The host only reads the trailer from its own executable, so a plain
+`kaplay-native-host` binary is unaffected.
+
+On macOS, appending to a Mach-O binary invalidates its ad-hoc signature, so
+`pack` runs `codesign --force --sign -` on the output. That is enough to run
+locally and in CI; shipping outside your team still needs a Developer ID
+signature and notarization.
+
+## Game CI
+
+This workflow builds a single-file game for Linux, Windows, and Apple Silicon
+macOS whenever the game is tagged. Add Intel macOS by adding `macos-15-intel`
+to the matrix.
+
+```yaml
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  package:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: my-game-linux-x64
+          - os: windows-latest
+            artifact: my-game-windows-x64.exe
+          - os: macos-latest
+            artifact: my-game-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Package
+        run: npx --yes kaplay-native pack . --out "${{ matrix.artifact }}" --js-engine v8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+```
+
+Swap `actions/upload-artifact` for a GitHub release step if you want tagged
+builds published, and add `--allow-network --url https://your-server` if the
+game talks to a backend.
+
+### Cross-packaging
+
+`--host` accepts a host binary for another platform, so one machine can produce
+every artifact. Download the hosts from the
+[releases page](https://github.com/beemdvp/kaplay-native/releases) and name the
+output yourself:
+
+```sh
+kaplay-native pack ./my-game --host hosts/kaplay-native-host-windows-x64.exe \
+  --out dist/my-game.exe --js-engine v8
+```
+
+## Releasing the toolchain
+
+Tag the repository and the release workflow builds the host for Linux x64 and
+arm64, macOS x64 and arm64, and Windows x64, runs a packed-game smoke test on
+each platform, and attaches the binaries to the GitHub release:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The same workflow publishes `cli/` to npm when the `NPM_TOKEN` secret is set,
+and skips publishing otherwise. The CLI downloads hosts by its own package
+version, so the npm version must match the release tag; the workflow rewrites
+it from the tag before publishing. Keep the Cargo workspace version in sync for
+`kaplay-native-host --version`.

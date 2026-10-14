@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Create the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 ||
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" --generate-notes
+
+  build:
+    name: Host (${{ matrix.name }})
+    needs: release
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: kaplay-native-host-linux-x64
+            ext: ""
+            native: true
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: kaplay-native-host-linux-arm64
+            ext: ""
+            native: true
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            asset: kaplay-native-host-macos-arm64
+            ext: ""
+            native: true
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            asset: kaplay-native-host-macos-x64
+            ext: ""
+            native: false
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: kaplay-native-host-windows-x64.exe
+            ext: ".exe"
+            native: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Add the rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 \
+            xvfb
+      - name: Build the host
+        run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host --features v8
+      - name: Pack and run a game
+        if: matrix.native
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST="target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}"
+          node cli/src/index.mjs pack examples/bridge --host "$HOST" --out smoke-game --js-engine v8
+          RUN="smoke-game${{ matrix.ext }}"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a "$RUN" --frames 1 --no-steam --no-audio 2>&1 | grep -o 'BRIDGE .*' > smoke.txt
+          else
+            "$RUN" --frames 1 --no-steam --no-audio 2>&1 | grep -o 'BRIDGE .*' > smoke.txt
+          fi
+          test -s smoke.txt
+          head -c 200 smoke.txt
+          echo
+      - name: Stage the release asset
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}" "${{ matrix.asset }}"
+      - name: Upload the workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+      - name: Upload the release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ matrix.asset }}" --clobber
+
+  npm:
+    name: Publish the CLI
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Download and run the released host
+        env:
+          KAPLAY_NATIVE_CACHE: ${{ runner.temp }}/kaplay-native-cache
+        run: |
+          (cd cli && npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version)
+          node cli/src/index.mjs doctor
+          node cli/src/index.mjs engines
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not set; skipping npm publish"
+            exit 0
+          fi
+          (cd cli && npm publish --access public)
