@@ -41,30 +41,35 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: kaplay-native-host-linux-x64
+            asset_v8: kaplay-native-host-linux-x64-v8
             ext: ""
             native: true
           - name: linux-arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset: kaplay-native-host-linux-arm64
+            asset_v8: kaplay-native-host-linux-arm64-v8
             ext: ""
             native: true
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
             asset: kaplay-native-host-macos-arm64
+            asset_v8: kaplay-native-host-macos-arm64-v8
             ext: ""
             native: true
           - name: macos-x64
             os: macos-latest
             target: x86_64-apple-darwin
             asset: kaplay-native-host-macos-x64
+            asset_v8: kaplay-native-host-macos-x64-v8
             ext: ""
             native: false
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: kaplay-native-host-windows-x64.exe
+            asset_v8: kaplay-native-host-windows-x64-v8.exe
             ext: ".exe"
             native: true
     steps:
@@ -89,8 +94,16 @@ jobs:
           Invoke-WebRequest -Uri https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z -OutFile mesa.7z
           7z x mesa.7z -omesa
           Copy-Item mesa/x64/*.dll .
-      - name: Build the host
-        run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host --features v8
+      - name: Build the quickjs host
+        run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host
+      - name: Stage the quickjs host
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}" "${{ matrix.asset }}"
+      - name: Build the v8 host
+        run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host --no-default-features --features v8
+      - name: Stage the v8 host
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}" "${{ matrix.asset_v8 }}"
       - name: Pack and run a game
         if: matrix.native
         shell: bash
@@ -99,7 +112,7 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: |
           set -euo pipefail
-          HOST="target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}"
+          HOST="${{ matrix.asset_v8 }}"
           node cli/src/index.mjs pack examples/bridge --host "$HOST" --out smoke-game --js-engine v8
           RUN="./smoke-game${{ matrix.ext }}"
           if [ "${{ runner.os }}" = "Linux" ]; then
@@ -111,20 +124,19 @@ jobs:
           test -s smoke.txt
           head -c 200 smoke.txt
           echo
-      - name: Stage the release asset
-        shell: bash
-        run: cp "target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}" "${{ matrix.asset }}"
-      - name: Upload the workflow artifact
+      - name: Upload the workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
-      - name: Upload the release asset
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset_v8 }}
+      - name: Upload the release assets
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" "${{ matrix.asset }}" --clobber
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ matrix.asset }}" "${{ matrix.asset_v8 }}" --clobber
 
   npm:
     name: Publish the CLI

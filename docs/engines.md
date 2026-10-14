@@ -63,8 +63,9 @@ only that engine and fails at startup when asked for the other. When both are
 compiled in, the default is QuickJS.
 
 `kaplay-native pack --js-engine v8` embeds the choice in a distributed game, so
-a packed binary starts with V8 without any flags; see
-[distribution.md](distribution.md).
+a packed binary starts with V8 without any flags. It also makes the CLI use the
+V8 host flavor, which is why a default QuickJS-packed game cannot be switched
+to V8 with a runtime flag; see [distribution.md](distribution.md).
 
 ## Behavior differences
 

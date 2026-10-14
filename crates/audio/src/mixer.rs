@@ -9,6 +9,8 @@ pub struct Voice {
     pub rate: f64,
     pub gain: f32,
     pub pan: f32,
+    gain_left: f32,
+    gain_right: f32,
     pub looping: bool,
     pub start_at: Option<u64>,
     pub stop_at: Option<u64>,
@@ -47,6 +49,8 @@ impl Mixer {
         self.next_voice = self.next_voice.wrapping_add(1).max(1);
         let offset = (offset_seconds * buffer.sample_rate as f64).max(0.0);
         let rate = buffer.sample_rate as f64 / self.sample_rate as f64 * playback_rate;
+        let pan = pan.clamp(-1.0, 1.0);
+        let (gain_left, gain_right) = pan_gains(pan);
         self.voices.push(Voice {
             id,
             position: offset,
@@ -57,7 +61,9 @@ impl Mixer {
             },
             buffer,
             gain: gain.max(0.0),
-            pan: pan.clamp(-1.0, 1.0),
+            pan,
+            gain_left,
+            gain_right,
             looping,
             start_at,
             stop_at: None,
@@ -74,7 +80,11 @@ impl Mixer {
 
     pub fn set_pan(&mut self, id: u32, pan: f32) {
         if let Some(voice) = self.voice(id) {
-            voice.pan = pan.clamp(-1.0, 1.0);
+            let pan = pan.clamp(-1.0, 1.0);
+            let (gain_left, gain_right) = pan_gains(pan);
+            voice.pan = pan;
+            voice.gain_left = gain_left;
+            voice.gain_right = gain_right;
         }
     }
 
@@ -184,9 +194,8 @@ impl Mixer {
                     (a + (b - a) * fraction, c + (d - c) * fraction)
                 };
 
-                let (gain_left, gain_right) = pan_gains(voice.pan);
-                left += sound_left * gain_left * voice.gain;
-                right += sound_right * gain_right * voice.gain;
+                left += sound_left * voice.gain_left * voice.gain;
+                right += sound_right * voice.gain_right * voice.gain;
 
                 voice.position += voice.rate;
                 if voice.position >= frames_total as f64 {

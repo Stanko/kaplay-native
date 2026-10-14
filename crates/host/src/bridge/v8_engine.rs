@@ -330,8 +330,8 @@ fn fs_size<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>)
     rv.set_int32(
         host(&args)
             .assets
-            .read(&path)
-            .map_or(-1, |bytes| bytes.len() as i32),
+            .size(&path)
+            .map_or(-1, |size| size as i32),
     );
 }
 

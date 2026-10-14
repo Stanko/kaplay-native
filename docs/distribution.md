@@ -28,6 +28,12 @@ GitHub release that matches the CLI version and caches it:
 Overrides: `--host <path>`, `KAPLAY_NATIVE_HOST`, and `KAPLAY_NATIVE_CACHE`.
 `kaplay-native doctor` prints which host was resolved and where it came from.
 
+Each release ships two host flavors per platform: the default QuickJS binary
+(`kaplay-native-host-<platform>`) and the V8 binary
+(`kaplay-native-host-<platform>-v8`, ~64 MB larger). The CLI downloads the
+default one unless the command asks for V8 with `--js-engine v8`, so a game
+built for the default engine never carries the V8 runtime.
+
 ## Pack a game
 
 ```sh
@@ -42,11 +48,15 @@ Options that change what the game does when launched:
 
 | Flag | Effect |
 | --- | --- |
-| `--js-engine quickjs\|v8` | Default engine for this binary |
+| `--js-engine quickjs\|v8` | Engine and host flavor for this binary |
 | `--title <name>` | Window title |
 | `--window <WxH>` | Initial window size |
 | `--allow-network` | Enable HTTP and WebSocket requests |
 | `--url <url>` | Page URL for `window.location` and relative requests |
+
+`--js-engine v8` also selects the V8 host flavor when the CLI downloads one.
+The result contains only that engine, so a QuickJS-packed game cannot switch to
+V8 at runtime; pack with `--js-engine v8` to ship V8.
 
 Everything else (`--host`, `--out`, `--entry`, `--web-dist`, `--pak`) controls
 packaging itself. Pack from an existing archive with `--pak game.pak`.
@@ -151,9 +161,10 @@ kaplay-native pack ./my-game --host hosts/kaplay-native-host-windows-x64.exe \
 
 ## Releasing the toolchain
 
-Tag the repository and the release workflow builds the host for Linux x64 and
-arm64, macOS x64 and arm64, and Windows x64, runs a packed-game smoke test on
-each platform, and attaches the binaries to the GitHub release:
+Tag the repository and the release workflow builds the QuickJS and V8 host for
+Linux x64 and arm64, macOS x64 and arm64, and Windows x64, runs a packed-game
+smoke test (V8 flavor) on each platform, and attaches the binaries to the
+GitHub release:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0

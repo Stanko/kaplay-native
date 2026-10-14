@@ -244,8 +244,9 @@ if (kaplayNative.steam.available()) {
 
 The host ships with QuickJS and can also be built with a V8 backend. Both
 engines evaluate the same shim and the same game, and both implement the full
-`__kapNative` bridge, so games do not change. Pick the engine at build time
-with Cargo features and at runtime with `--js-engine`:
+`__kapNative` bridge, so games do not change. Release hosts are built per
+engine, so a QuickJS game never carries the ~64 MB static V8 binary. Pick the
+engine at build time with Cargo features and at runtime with `--js-engine`:
 
 ```sh
 cargo build -p kaplay-native-host --features v8
@@ -253,8 +254,9 @@ node cli/src/index.mjs run ./my-game --js-engine v8
 ```
 
 `--engines` lists what a host binary was built with. A default build stays
-QuickJS-only; V8 pulls in a prebuilt static V8 binary. The language surface,
-watchdog behavior, and parity checks are covered in
+QuickJS-only, and the CLI downloads the matching host flavor (`-v8`) when
+`--js-engine v8` is passed. V8 pulls in a prebuilt static V8 binary. The
+language surface, watchdog behavior, and parity checks are covered in
 [docs/engines.md](docs/engines.md).
 
 ## Development

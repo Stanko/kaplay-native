@@ -5,7 +5,9 @@ mod mixer;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 pub use buffer::AudioBuffer;
 pub use decode::{decode, output_sample_rate, DecodeError};
@@ -30,6 +32,8 @@ pub struct Engine {
     clock: AtomicU64,
     sample_rate: u32,
     paused: AtomicBool,
+    silent: AtomicBool,
+    silent_start: OnceLock<Instant>,
 }
 
 impl Engine {
@@ -40,6 +44,8 @@ impl Engine {
             clock: AtomicU64::new(0),
             sample_rate: sample_rate.max(1),
             paused: AtomicBool::new(false),
+            silent: AtomicBool::new(false),
+            silent_start: OnceLock::new(),
         }
     }
 
@@ -47,7 +53,13 @@ impl Engine {
         self.sample_rate
     }
 
+    pub fn set_silent(&self) {
+        self.silent.store(true, Ordering::Relaxed);
+        let _ = self.silent_start.set(Instant::now());
+    }
+
     pub fn current_time(&self) -> f64 {
+        self.advance_silent();
         self.clock.load(Ordering::Relaxed) as f64 / self.sample_rate as f64
     }
 
@@ -62,10 +74,41 @@ impl Engine {
     }
 
     pub fn take_events(&self) -> Vec<AudioEvent> {
+        self.advance_silent();
         self.events
             .lock()
             .map(|mut events| std::mem::take(&mut *events))
             .unwrap_or_default()
+    }
+
+    fn advance_silent(&self) {
+        if !self.silent.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(start) = self.silent_start.get() else {
+            return;
+        };
+        let target = (start.elapsed().as_secs_f64() * self.sample_rate as f64) as u64;
+        let mut clock = self.clock.load(Ordering::Relaxed);
+        if target <= clock {
+            return;
+        }
+        const MAX_ADVANCE: u64 = (BLOCK_FRAMES as u64) * 200;
+        if target.saturating_sub(clock) > MAX_ADVANCE {
+            clock = target - MAX_ADVANCE;
+            self.clock.store(clock, Ordering::Relaxed);
+        }
+        if self.paused.load(Ordering::Relaxed) {
+            self.clock.store(target, Ordering::Relaxed);
+            return;
+        }
+        let mut scratch = [0.0f32; BLOCK_FRAMES * 2];
+        let mut remaining = (target - clock) as usize;
+        while remaining > 0 {
+            let frames = remaining.min(BLOCK_FRAMES);
+            self.render(&mut scratch[..frames * 2]);
+            remaining -= frames;
+        }
     }
 
     pub fn render(&self, out: &mut [f32]) {
@@ -103,14 +146,83 @@ impl Engine {
     }
 }
 
+struct DecodeJob {
+    request: u32,
+    bytes: Vec<u8>,
+}
+
+fn spawn_decode_workers(shared: &Arc<Shared>) -> Option<Sender<DecodeJob>> {
+    let workers = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().div_ceil(2))
+        .unwrap_or(2)
+        .clamp(1, 4);
+    let (sender, receiver) = channel::<DecodeJob>();
+    let queue = Arc::new(Mutex::new(receiver));
+    let mut spawned = 0;
+    for index in 0..workers {
+        let queue = Arc::clone(&queue);
+        let shared = Arc::clone(shared);
+        match std::thread::Builder::new()
+            .name(format!("kaplay-audio-decode-{index}"))
+            .spawn(move || decode_worker(&shared, &queue))
+        {
+            Ok(_) => spawned += 1,
+            Err(error) => log::error!("failed to start the audio decode worker: {error}"),
+        }
+    }
+    (spawned > 0).then_some(sender)
+}
+
+fn decode_worker(shared: &Arc<Shared>, queue: &Mutex<Receiver<DecodeJob>>) {
+    loop {
+        let job = match queue.lock() {
+            Ok(queue) => queue.recv(),
+            Err(_) => return,
+        };
+        let Ok(job) = job else {
+            return;
+        };
+        decode_job(shared, job);
+    }
+}
+
+fn decode_job(shared: &Arc<Shared>, job: DecodeJob) {
+    let (buffer, error) = match decode::decode(&job.bytes) {
+        Ok(buffer) => {
+            let id = shared.next_buffer.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut buffers) = shared.buffers.lock() {
+                buffers.insert(id, Arc::new(buffer));
+            }
+            (id, None)
+        }
+        Err(error) => (0, Some(error.to_string())),
+    };
+    shared.engine.push_event(AudioEvent::Decoded {
+        request: job.request,
+        buffer,
+        error,
+    });
+}
+
 struct Shared {
     engine: Arc<Engine>,
     buffers: Mutex<HashMap<u32, Arc<AudioBuffer>>>,
     next_buffer: AtomicU32,
 }
 
+impl Shared {
+    fn new(engine: Arc<Engine>) -> Self {
+        Self {
+            engine,
+            buffers: Mutex::new(HashMap::new()),
+            next_buffer: AtomicU32::new(1),
+        }
+    }
+}
+
 pub struct Audio {
     shared: Arc<Shared>,
+    decode: Option<Sender<DecodeJob>>,
     _backend: backend::Handle,
     has_device: bool,
 }
@@ -121,30 +233,28 @@ impl Audio {
         let engine = Arc::new(Engine::new(sample_rate));
         let (handle, has_device) = match backend::start(engine.clone()) {
             Some(handle) => (handle, true),
-            None => (backend::silent(engine.clone()), false),
+            None => {
+                engine.set_silent();
+                (backend::silent(), false)
+            }
         };
-        Self {
-            shared: Arc::new(Shared {
-                engine,
-                buffers: Mutex::new(HashMap::new()),
-                next_buffer: AtomicU32::new(1),
-            }),
-            _backend: handle,
-            has_device,
-        }
+        Self::with_engine(engine, handle, has_device)
     }
 
     pub fn silent() -> Self {
         let engine = Arc::new(Engine::new(output_sample_rate()));
-        let handle = backend::silent(engine.clone());
+        engine.set_silent();
+        Self::with_engine(engine, backend::silent(), false)
+    }
+
+    fn with_engine(engine: Arc<Engine>, handle: backend::Handle, has_device: bool) -> Self {
+        let shared = Arc::new(Shared::new(engine));
+        let decode = spawn_decode_workers(&shared);
         Self {
-            shared: Arc::new(Shared {
-                engine,
-                buffers: Mutex::new(HashMap::new()),
-                next_buffer: AtomicU32::new(1),
-            }),
+            shared,
+            decode,
             _backend: handle,
-            has_device: false,
+            has_device,
         }
     }
 
@@ -169,24 +279,16 @@ impl Audio {
     }
 
     pub fn decode_async(&self, request: u32, bytes: Vec<u8>) {
+        let job = DecodeJob { request, bytes };
+        if let Some(sender) = &self.decode {
+            if let Err(error) = sender.send(job) {
+                let shared = self.shared.clone();
+                std::thread::spawn(move || decode_job(&shared, error.0));
+            }
+            return;
+        }
         let shared = self.shared.clone();
-        std::thread::spawn(move || {
-            let (buffer, error) = match decode::decode(&bytes) {
-                Ok(buffer) => {
-                    let id = shared.next_buffer.fetch_add(1, Ordering::Relaxed);
-                    if let Ok(mut buffers) = shared.buffers.lock() {
-                        buffers.insert(id, Arc::new(buffer));
-                    }
-                    (id, None)
-                }
-                Err(error) => (0, Some(error.to_string())),
-            };
-            shared.engine.push_event(AudioEvent::Decoded {
-                request,
-                buffer,
-                error,
-            });
-        });
+        std::thread::spawn(move || decode_job(&shared, job));
     }
 
     pub fn upload_buffer(&self, sample_rate: u32, channels: u16, samples: Vec<f32>) -> u32 {

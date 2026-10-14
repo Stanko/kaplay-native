@@ -32,6 +32,7 @@ use crate::state::{HostState, PendingMessage};
 
 const SHIM: &str = include_str!("../../../shim/src/shim.js");
 const DEFAULT_FONT: &[u8] = include_bytes!("../../../assets/fonts/DejaVuSansMono.ttf");
+const FRAME_SAMPLES: usize = 10_000;
 
 fn percentile(sorted: &[f32], fraction: f32) -> f32 {
     if sorted.is_empty() {
@@ -48,7 +49,7 @@ pub struct HostApp {
     inner: Option<Inner>,
     frames: u32,
     failed: bool,
-    frame_ms: Vec<f32>,
+    frame_ms: std::collections::VecDeque<f32>,
     started: std::time::Instant,
     stats_last: std::time::Instant,
     stats_frames: u32,
@@ -396,7 +397,7 @@ impl HostApp {
             inner: None,
             frames: 0,
             failed: false,
-            frame_ms: Vec::new(),
+            frame_ms: std::collections::VecDeque::new(),
             started: std::time::Instant::now(),
             stats_last: std::time::Instant::now(),
             stats_frames: 0,
@@ -650,7 +651,10 @@ impl HostApp {
     }
 
     fn record_frame(&mut self, ms: f32) {
-        self.frame_ms.push(ms);
+        if self.frame_ms.len() == FRAME_SAMPLES {
+            self.frame_ms.pop_front();
+        }
+        self.frame_ms.push_back(ms);
         if !self.config.stats {
             return;
         }
@@ -674,7 +678,7 @@ impl HostApp {
         if self.frame_ms.is_empty() {
             return;
         }
-        let mut sorted = self.frame_ms.clone();
+        let mut sorted: Vec<f32> = self.frame_ms.iter().copied().collect();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let elapsed = self.started.elapsed().as_secs_f32();
         log::info!(

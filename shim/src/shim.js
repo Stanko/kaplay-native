@@ -80,7 +80,7 @@
     // ------------------------------------------------------------------ timers
 
     const timers = new Map();
-    const frames = [];
+    let frames = [];
     let nextTimer = 1;
     let nextFrame = 1;
 
@@ -115,6 +115,7 @@
     }
 
     function tickTimers(now) {
+        if (timers.size === 0) return;
         const due = [];
         for (const entry of timers) {
             if (entry[1].due <= now) due.push(entry);
@@ -2501,7 +2502,8 @@
 
     global.__kapNative_onFrame = function (now) {
         tickTimers(now);
-        const queue = frames.splice(0, frames.length);
+        const queue = frames;
+        frames = [];
         for (const entry of queue) {
             try {
                 entry.callback(now);

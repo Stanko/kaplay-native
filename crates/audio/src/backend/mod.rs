@@ -10,7 +10,6 @@ mod alsa;
 mod cpal_backend;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use cpal::traits::StreamTrait;
-mod silent;
 
 pub struct Thread {
     stop: Arc<AtomicBool>,
@@ -38,13 +37,13 @@ pub enum Handle {
     Alsa(Thread),
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     Cpal(Box<cpal::Stream>),
-    Silent(Thread),
+    Silent,
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
         match self {
-            Handle::Silent(thread) => thread.shutdown(),
+            Handle::Silent => {}
             #[cfg(target_os = "linux")]
             Handle::Alsa(thread) => thread.shutdown(),
             #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -85,6 +84,6 @@ pub fn start(engine: Arc<Engine>) -> Option<Handle> {
     None
 }
 
-pub fn silent(engine: Arc<Engine>) -> Handle {
-    Handle::Silent(silent::start(engine))
+pub fn silent() -> Handle {
+    Handle::Silent
 }
