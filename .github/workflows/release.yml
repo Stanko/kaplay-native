@@ -82,11 +82,21 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
             libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 \
             xvfb
+      - name: Install the Mesa software renderer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z -OutFile mesa.7z
+          7z x mesa.7z -omesa
+          Copy-Item mesa/x64/*.dll .
       - name: Build the host
         run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host --features v8
       - name: Pack and run a game
         if: matrix.native
         shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
         run: |
           set -euo pipefail
           HOST="target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}"
