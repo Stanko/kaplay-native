@@ -1,8 +1,11 @@
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use crate::Engine;
+
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "linux")]
+use std::thread::JoinHandle;
 
 #[cfg(target_os = "linux")]
 mod alsa;
@@ -11,11 +14,13 @@ mod cpal_backend;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use cpal::traits::StreamTrait;
 
+#[cfg(target_os = "linux")]
 pub struct Thread {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
+#[cfg(target_os = "linux")]
 impl Thread {
     pub fn new(stop: Arc<AtomicBool>, handle: JoinHandle<()>) -> Self {
         Self {
