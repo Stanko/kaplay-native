@@ -4,3 +4,4 @@ dist/
 *.pak
 *.log
 build/
+steam_appid.txt

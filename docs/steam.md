@@ -107,6 +107,23 @@ for games that load Steam state from their own event loops or tests.
    stats, and cloud files persist per Steam user and can be re-read on the
    next run.
 
+`scripts/steam-overlay-test.sh` automates those steps, including the direct
+launch preload. It checks the client is running, resolves the library from
+`KAPLAY_NATIVE_STEAM_LIB` or a local SDK copy, writes `steam_appid.txt`, and
+runs the bridge example unless host arguments are passed after `--`. Use
+`--check` to validate the setup without launching, or `--demo` to run
+`examples/steam`, an on-screen demo of the API: it shows player, stat,
+achievement, and cloud status, and binds Space (cloud write), A (unlock
+`ACH_WIN_ONE_GAME`), S (add a `NumWins` stat and store), and D (cloud delete).
+The demo needs a KAPLAY bundle, resolved from `$KAPLAY_BUNDLE` or a local
+kaplay checkout, and expects app id 480 because it uses Spacewar's achievement
+and stat names.
+
+On a Wayland session the script passes `--x11` to the host: Steam's overlay
+renderer loads but never attaches to a native Wayland window, while it hooks
+the GLX context of the XWayland window right away. If you pass your own host
+arguments after `--`, remember to include `--x11` there too.
+
 To exercise the `RestartAppIfNecessary` branch without launching from the
 client, pass `--appid 480` together with `SteamAppId=480 SteamGameId=480` in
 the environment: the call then sees a Steam launch context and returns false.
