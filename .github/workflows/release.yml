@@ -91,12 +91,13 @@ jobs:
           set -euo pipefail
           HOST="target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}"
           node cli/src/index.mjs pack examples/bridge --host "$HOST" --out smoke-game --js-engine v8
-          RUN="smoke-game${{ matrix.ext }}"
+          RUN="./smoke-game${{ matrix.ext }}"
           if [ "${{ runner.os }}" = "Linux" ]; then
-            xvfb-run -a "$RUN" --frames 1 --no-steam --no-audio 2>&1 | grep -o 'BRIDGE .*' > smoke.txt
+            xvfb-run -a "$RUN" --frames 1 --no-steam --no-audio > smoke-run.log 2>&1 || { cat smoke-run.log; exit 1; }
           else
-            "$RUN" --frames 1 --no-steam --no-audio 2>&1 | grep -o 'BRIDGE .*' > smoke.txt
+            "$RUN" --frames 1 --no-steam --no-audio > smoke-run.log 2>&1 || { cat smoke-run.log; exit 1; }
           fi
+          grep -o 'BRIDGE .*' smoke-run.log > smoke.txt
           test -s smoke.txt
           head -c 200 smoke.txt
           echo
