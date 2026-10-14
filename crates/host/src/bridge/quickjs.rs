@@ -5,6 +5,7 @@ use kaplay_native_gfx::pixels::UploadOptions;
 use rquickjs::function::Rest;
 use rquickjs::{Ctx, Function, Object, TypedArray};
 
+use super::{handle, option_handle, parse_headers, source_size};
 use crate::state::HostState;
 
 fn slice_u8<'a, 'js>(array: &'a TypedArray<'js, u8>) -> Option<&'a [u8]> {
@@ -25,10 +26,6 @@ fn slice_f32<'a, 'js>(array: &'a TypedArray<'js, f32>) -> Option<&'a [f32]> {
 fn slice_f32_mut<'a, 'js>(array: &'a mut TypedArray<'js, f32>) -> Option<&'a mut [f32]> {
     let raw = array.as_raw()?;
     Some(unsafe { std::slice::from_raw_parts_mut(raw.as_ptr() as *mut f32, raw.len() / 4) })
-}
-
-fn handle(value: Option<u32>) -> i32 {
-    value.map_or(-1, |value| value as i32)
 }
 
 pub fn install<'js>(ctx: &Ctx<'js>, state: Rc<HostState>, shim: &str) -> rquickjs::Result<()> {
@@ -653,18 +650,6 @@ fn install_canvas<'js>(
     Ok(())
 }
 
-fn source_size(state: &HostState, kind: i32, id: u32) -> (u32, u32) {
-    if kind == 0 {
-        state
-            .images
-            .borrow()
-            .get(&id)
-            .map_or((0, 0), |image| (image.width, image.height))
-    } else {
-        state.canvas.borrow().canvas_size(id).unwrap_or((0, 0))
-    }
-}
-
 fn install_net<'js>(
     ctx: &Ctx<'js>,
     native: &Object<'js>,
@@ -802,10 +787,6 @@ fn install_net<'js>(
     }
     native.set("net", object)?;
     Ok(())
-}
-
-fn parse_headers(json: &str) -> Vec<(String, String)> {
-    serde_json::from_str(json).unwrap_or_default()
 }
 
 fn install_audio<'js>(
@@ -1977,12 +1958,4 @@ fn install_gl<'js>(
     }
     native.set("gl", object)?;
     Ok(())
-}
-
-fn option_handle(handle: i32) -> Option<u32> {
-    if handle < 0 {
-        None
-    } else {
-        Some(handle as u32)
-    }
 }

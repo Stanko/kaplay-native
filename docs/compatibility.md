@@ -6,24 +6,26 @@ missing.
 
 ## JavaScript
 
-- QuickJS via `rquickjs` with ES2020 including classes, generators, typed
-  arrays, `WeakMap`, and modules-in-script support.
+- QuickJS via `rquickjs` with ES2020, or V8 via `rusty_v8` with full modern
+  JavaScript, selected at build time and runtime. The engine matrix and build
+  flags are in [engines.md](engines.md).
 - The game entry is evaluated as an ES module, matching `<script
   type="module">` in a browser: top-level declarations stay module-scoped and
   cannot clobber globals exported by KAPLAY or other libraries. `--preload`
   scripts stay classic scripts, like `<script src>` on a page.
-- `Promise`, `async`/`await` with an explicit job queue pump.
-- `TextEncoder` and `TextDecoder` (UTF-8) are shimmed because QuickJS does not
-  provide them.
-- `Promise.withResolvers` is polyfilled.
+- `Promise`, `async`/`await` with an explicit job queue pump on both engines.
+- `TextEncoder` and `TextDecoder` (UTF-8) are shimmed. QuickJS does not provide
+  them, and the shim keeps them unconditional so V8 behavior is identical.
+- `Promise.withResolvers` is polyfilled on both engines.
 - `URL` and `URLSearchParams` are implemented, including base resolution and
   form encoding, because SDKs parse their endpoint URLs at import time.
 - `crypto.getRandomValues` and `crypto.randomUUID` are backed by `Math.random`,
   which is fine for gameplay identifiers but not for secrets.
 - `matchMedia` returns a non-matching media query list, so pointer-capability
   checks report a desktop.
-- `Intl` is not available. KAPLAY falls back to a code-point splitter in
-  `runes.ts`, so text still works, but locale-aware segmentation does not.
+- `Intl` is not available on the default QuickJS build. KAPLAY falls back to a
+  code-point splitter in `runes.ts`, so text still works, but locale-aware
+  segmentation does not. The V8 backend provides `Intl`.
 
 ## DOM and events
 
@@ -140,6 +142,9 @@ Linux, macOS, and Windows.
 
 `cargo test` covers the native helpers, `node --test shim/test/*.test.js`
 covers the browser semantics against a stub bridge, and the runtime can render
-a fixed number of frames and capture a screenshot. There is no browser or
-Chromium dependency anywhere in the tree by design: Steam overlay support
-requires a host that owns `SwapBuffers`, which webview shells do not allow.
+a fixed number of frames and capture a screenshot. CI builds the V8 backend in
+addition to the default QuickJS build, runs the `examples/bridge` conformance
+script on both engines, and compares the `examples/smoke` frames byte for
+byte. There is no browser or Chromium dependency anywhere in the tree by
+design: Steam overlay support requires a host that owns `SwapBuffers`, which
+webview shells do not allow.

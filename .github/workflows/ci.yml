@@ -28,6 +28,23 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  rust-v8:
+    name: Rust (V8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0
+      - run: cargo clippy -p kaplay-native-host --all-targets --no-default-features --features v8 -- -D warnings
+      - run: cargo test -p kaplay-native-host --no-default-features --features v8
+      - run: cargo test -p kaplay-native-host --features v8
+
   node:
     name: Node (${{ matrix.os }})
     strategy:
@@ -43,6 +60,51 @@ jobs:
       - run: node --test shim/test/shim.test.js
       - name: Pack the smoke example
         run: node cli/src/index.mjs build examples/smoke --out smoke.pak
+
+  render-v8:
+    name: Render engines (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 \
+            xvfb
+      - run: cargo build --release -p kaplay-native-host --features v8
+      - name: Smoke frames match across engines
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -o pipefail
+          xvfb-run -a target/release/kaplay-native-host \
+            --script examples/smoke/main.js --dir examples/smoke \
+            --window 320x240 --frames 5 --no-steam --no-audio \
+            --screenshot-raw quickjs.rgba
+          xvfb-run -a target/release/kaplay-native-host \
+            --script examples/smoke/main.js --dir examples/smoke \
+            --window 320x240 --frames 5 --no-steam --no-audio \
+            --js-engine v8 --screenshot-raw v8.rgba
+          cmp quickjs.rgba v8.rgba
+          node scripts/check-frame.mjs v8.rgba 320 240
+      - name: Bridge parity across engines
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -o pipefail
+          xvfb-run -a target/release/kaplay-native-host \
+            --script examples/bridge/main.js --dir examples/bridge \
+            --window 320x240 --frames 1 --no-steam --no-audio \
+            --save-dir bridge-quickjs 2>&1 | grep -o 'BRIDGE .*' > quickjs.log
+          xvfb-run -a target/release/kaplay-native-host \
+            --script examples/bridge/main.js --dir examples/bridge \
+            --window 320x240 --frames 1 --no-steam --no-audio \
+            --save-dir bridge-v8 --js-engine v8 2>&1 | grep -o 'BRIDGE .*' > v8.log
+          diff quickjs.log v8.log
 
   render:
     name: Render (${{ matrix.os }})
