@@ -150,6 +150,32 @@ fn compile_module<'s>(
     Err(error)
 }
 
+fn install_callbacks(isolate: &mut OwnedIsolate) {
+    isolate.set_host_import_module_dynamically_callback(import_module);
+    isolate.set_host_initialize_import_meta_object_callback(initialize_import_meta);
+}
+
+extern "C" fn initialize_import_meta(
+    context: Local<Context>,
+    module: Local<Module>,
+    meta: Local<v8::Object>,
+) {
+    v8::callback_scope!(unsafe scope, context);
+    let url = with_loader(|loader| loader.origin(module).cloned())
+        .flatten()
+        .map(|id| module::module_url(&id));
+    let Some(url) = url else {
+        return;
+    };
+    let Some(key) = v8::String::new(scope, "url") else {
+        return;
+    };
+    let Some(value) = v8::String::new(scope, &url) else {
+        return;
+    };
+    meta.create_data_property(scope, key.into(), value.into());
+}
+
 fn throw_error(scope: &v8::PinScope<'_, '_>, message: &str) {
     let Some(message) = v8::String::new(scope, message) else {
         return;
@@ -361,7 +387,7 @@ impl Engine {
         isolate.set_microtasks_policy(MicrotasksPolicy::Explicit);
         isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 10);
         isolate.set_promise_reject_callback(promise_rejected);
-        isolate.set_host_import_module_dynamically_callback(import_module);
+        install_callbacks(&mut isolate);
         install_loader(state.assets.clone());
 
         let context = {
@@ -598,7 +624,7 @@ mod tests {
         initialize();
         install_loader(Rc::new(AssetSource::from_dir(dir)));
         let mut isolate = v8::Isolate::new(Default::default());
-        isolate.set_host_import_module_dynamically_callback(super::import_module);
+        super::install_callbacks(&mut isolate);
         v8::scope!(let scope, &mut isolate);
         let context = v8::Context::new(scope, Default::default());
         let scope = &mut v8::ContextScope::new(scope, context);
@@ -665,6 +691,34 @@ mod tests {
     }
 
     #[test]
+    fn modules_expose_import_meta_url() {
+        let dir = fixture(
+            "import-meta",
+            &[
+                ("entry.js", ""),
+                ("chunk.js", "export const url = import.meta.url;"),
+            ],
+        );
+        with_assets(&dir, |scope| {
+            eval_module_in(
+                scope,
+                "entry.js",
+                "import { url } from './chunk.js'; globalThis.chunk = url; globalThis.entry = import.meta.url;",
+            )
+            .unwrap();
+            assert_eq!(
+                read(scope, "globalThis.chunk"),
+                "kaplay-native://game/chunk.js"
+            );
+            assert_eq!(
+                read(scope, "globalThis.entry"),
+                "kaplay-native://game/entry.js"
+            );
+        });
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn module_imports_resolve_relative_to_file_entries() {
         let dir = fixture(
             "files",
@@ -681,10 +735,14 @@ mod tests {
             eval_module_in(
                 scope,
                 &entry.to_string_lossy(),
-                "import './lib/chunk.js'; globalThis.loaded = true;",
+                "import './lib/chunk.js'; globalThis.loaded = true; globalThis.self = import.meta.url;",
             )
             .unwrap();
             assert_eq!(read(scope, "String(globalThis.loaded)"), "true");
+            assert_eq!(
+                read(scope, "globalThis.self"),
+                format!("file://{}", entry.display())
+            );
         });
         std::fs::remove_dir_all(dir).ok();
     }
@@ -720,20 +778,27 @@ mod tests {
             &[
                 (
                     "entry.js",
-                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; });",
+                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; globalThis.dynamicUrl = module.url; });",
                 ),
-                ("chunk.js", "export const answer = 7;"),
+                (
+                    "chunk.js",
+                    "export const answer = 7; export const url = import.meta.url;",
+                ),
             ],
         );
         with_assets(&dir, |scope| {
             eval_module_in(
                 scope,
                 "entry.js",
-                "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; });",
+                "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; globalThis.dynamicUrl = module.url; });",
             )
             .unwrap();
             scope.perform_microtask_checkpoint();
             assert_eq!(read(scope, "String(globalThis.dynamic)"), "7");
+            assert_eq!(
+                read(scope, "globalThis.dynamicUrl"),
+                "kaplay-native://game/chunk.js"
+            );
         });
         std::fs::remove_dir_all(dir).ok();
     }

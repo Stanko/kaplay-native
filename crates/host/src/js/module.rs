@@ -25,6 +25,15 @@ impl ModuleId {
     }
 }
 
+pub const MODULE_ORIGIN: &str = "kaplay-native://game/";
+
+pub fn module_url(id: &ModuleId) -> String {
+    match id {
+        ModuleId::Asset(path) => format!("{MODULE_ORIGIN}{path}"),
+        ModuleId::File(path) => format!("file://{}", path.display()),
+    }
+}
+
 pub fn resolve_specifier(base: &ModuleId, specifier: &str) -> Result<ModuleId, String> {
     let specifier = specifier.trim();
     let clean = strip_query(specifier);
@@ -126,7 +135,7 @@ fn lexical(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_module, resolve_specifier, ModuleId};
+    use super::{module_url, read_module, resolve_specifier, ModuleId};
     use kaplay_native_pak::AssetSource;
 
     fn asset(path: &str) -> ModuleId {
@@ -231,6 +240,19 @@ mod tests {
         assert_eq!(
             ModuleId::from_name(&absolute.to_string_lossy()),
             ModuleId::File(absolute)
+        );
+    }
+
+    #[test]
+    fn derives_module_urls() {
+        assert_eq!(
+            module_url(&asset("assets/chunk.js")),
+            "kaplay-native://game/assets/chunk.js"
+        );
+        let file = std::env::temp_dir().join("kap-module-test/demo/main.js");
+        assert_eq!(
+            module_url(&ModuleId::File(file.clone())),
+            format!("file://{}", file.display())
         );
     }
 

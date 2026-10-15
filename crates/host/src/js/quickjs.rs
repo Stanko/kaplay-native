@@ -122,7 +122,9 @@ impl Loader for AssetLoader {
         let id = ModuleId::from_name(name);
         let source = module::read_module(&self.assets, &id)
             .map_err(|error| rquickjs::Error::new_loading_message(name, error))?;
-        rquickjs::Module::declare(ctx.clone(), name.to_string(), source)
+        let module = rquickjs::Module::declare(ctx.clone(), name.to_string(), source)?;
+        module.meta()?.set("url", module::module_url(&id))?;
+        Ok(module)
     }
 }
 
@@ -210,6 +212,10 @@ fn evaluate_module_source(ctx: &rquickjs::Ctx<'_>, source: &str) -> Result<(), S
         source.as_bytes().to_vec(),
     )
     .map_err(|error| js_error(ctx, error))?;
+    module
+        .meta()
+        .and_then(|meta| meta.set("url", module::module_url(&ModuleId::from_name("preload"))))
+        .map_err(|error| js_error(ctx, error))?;
     let (module, promise) = module.eval().map_err(|error| js_error(ctx, error))?;
     run_pending_jobs(ctx);
     reject_module_evaluation(ctx, &promise)?;
@@ -242,6 +248,10 @@ fn evaluate_module(context: &Context, name: &str, source: &str) -> Result<(), St
         let module =
             rquickjs::Module::declare(ctx.clone(), name.to_string(), source.as_bytes().to_vec())
                 .map_err(|error| js_error(&ctx, error))?;
+        module
+            .meta()
+            .and_then(|meta| meta.set("url", module::module_url(&ModuleId::from_name(name))))
+            .map_err(|error| js_error(&ctx, error))?;
         let (_, promise) = module.eval().map_err(|error| js_error(&ctx, error))?;
         run_pending_jobs(&ctx);
         reject_module_evaluation(&ctx, &promise)
@@ -384,26 +394,56 @@ mod tests {
     }
 
     #[test]
+    fn modules_expose_import_meta_url() {
+        with_fixture(
+            "import-meta",
+            &[
+                ("entry.js", ""),
+                ("chunk.js", "export const url = import.meta.url;"),
+            ],
+            |context| {
+                evaluate_module(
+                    context,
+                    "entry.js",
+                    "import { url } from './chunk.js'; globalThis.chunk = url; globalThis.entry = import.meta.url;",
+                )
+                .unwrap();
+                context.with(|ctx| {
+                    let chunk: String = ctx.eval("globalThis.chunk").unwrap();
+                    assert_eq!(chunk, "kaplay-native://game/chunk.js");
+                    let entry: String = ctx.eval("globalThis.entry").unwrap();
+                    assert_eq!(entry, "kaplay-native://game/entry.js");
+                });
+            },
+        );
+    }
+
+    #[test]
     fn dynamic_imports_return_the_module_namespace() {
         with_fixture(
             "dynamic",
             &[
                 (
                     "entry.js",
-                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; });",
+                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; globalThis.dynamicUrl = module.url; });",
                 ),
-                ("chunk.js", "export const answer = 7;"),
+                (
+                    "chunk.js",
+                    "export const answer = 7; export const url = import.meta.url;",
+                ),
             ],
             |context| {
                 evaluate_module(
                     context,
                     "entry.js",
-                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; });",
+                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; globalThis.dynamicUrl = module.url; });",
                 )
                 .unwrap();
                 context.with(|ctx| {
                     let dynamic: i32 = ctx.eval("globalThis.dynamic").unwrap();
                     assert_eq!(dynamic, 7);
+                    let url: String = ctx.eval("globalThis.dynamicUrl").unwrap();
+                    assert_eq!(url, "kaplay-native://game/chunk.js");
                 });
             },
         );

@@ -143,7 +143,8 @@ module-scoped, so they cannot collide with globals that KAPLAY or another
 library exports onto `window`. Imports between chunks resolve from the same
 directory, including the relative imports Vite emits for code splitting and
 `import()` calls for lazy chunks, so a production build with multiple chunks
-runs as-is.
+runs as-is. Modules see `import.meta.url`: `kaplay-native://game/<path>` for
+bundled files and `file://` for `--script` entries.
 
 ## Bundling from source
 
