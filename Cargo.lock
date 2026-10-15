@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-audio"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cpal",
  "libloading",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-canvas2d"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "fontdb",
  "thiserror 2.0.21",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-gfx"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "glow",
  "log",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-host"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-net"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "log",
  "rustls",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-pak"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "thiserror 2.0.21",
  "zip",
@@ -1357,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-steam"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "libloading",
  "log",
