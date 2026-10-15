@@ -163,17 +163,27 @@ kaplay-native pack ./my-game --host hosts/kaplay-native-host-windows-x64.exe \
 
 ## Releasing the toolchain
 
-Tag the repository and the release workflow builds the QuickJS and V8 host for
-Linux x64 and arm64, macOS x64 and arm64, and Windows x64, runs a packed-game
-smoke test (V8 flavor) on each platform, and attaches the binaries to the
-GitHub release:
+Merging to `main` releases the next version. The `Publish` workflow uses the
+version already in `cli/package.json` when a pull request set one, otherwise it
+bumps the prerelease or patch number, updates the Cargo workspace version and
+`Cargo.lock` with it, pushes the `v<version>` tag, and dispatches the release
+workflow. That workflow builds the QuickJS and V8 host for Linux x64 and arm64,
+macOS x64 and arm64, and Windows x64, runs a packed-game smoke test (V8 flavor)
+on each platform, and attaches the binaries to the GitHub release:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The same workflow publishes `cli/` to npm when the `NPM_TOKEN` secret is set,
-and skips publishing otherwise. The CLI downloads hosts by its own package
-version, so the npm version must match the release tag; the workflow rewrites
-it from the tag before publishing. Keep the Cargo workspace version in sync for
-`kaplay-native-host --version`.
+Tags can still be pushed by hand this way; the `Publish` workflow only
+automates the bump and tag. It needs an `NPM_TOKEN` repository secret (an npm
+automation token with publish rights for `kaplay-native`), which the release
+workflow uses to publish `cli/`. Without the secret the hosts are still built
+and released, and npm publishing is skipped. The npm version always matches the
+tag because the release workflow rewrites `cli/package.json` from the tag
+before publishing.
+
+Linux V8 hosts link against the slim archive published by the `Slim V8`
+workflow when a `slim-v8-<version>` release exists, and fall back to the
+prebuilt V8 archive otherwise. Run `Slim V8` once after upgrading the `v8`
+crate; it smoke-tests the archive against QuickJS before publishing it.

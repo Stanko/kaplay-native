@@ -38,40 +38,45 @@ if [ -z "${GN:-}" ] && ! command -v gn >/dev/null 2>&1; then
     export GN=$GN_DIR/gn
 fi
 
-if [ -z "${LIBCLANG_PATH:-}" ]; then
-    for dir in /usr/lib/llvm-2*/lib /usr/lib/llvm-3*/lib /usr/lib/x86_64-linux-gnu /usr/local/lib; do
-        [ -d "$dir" ] || continue
-        if ls "$dir"/libclang.so.2[1-9]* "$dir"/libclang.so.3* >/dev/null 2>&1; then
-            export LIBCLANG_PATH=$dir
+if [ -z "${LIBCLANG_PATH:-}" ] && [ -z "${CLANG_BASE_PATH:-}" ]; then
+    for base in /usr/lib/llvm-2* /usr/lib/llvm-3*; do
+        [ -x "$base/bin/clang" ] || continue
+        if ls "$base"/lib/libclang.so.2[1-9]* "$base"/lib/libclang.so.3* >/dev/null 2>&1; then
+            export LIBCLANG_PATH=$base/lib
+            export CLANG_BASE_PATH=$base
             break
         fi
     done
 fi
 
-if [ -z "${LIBCLANG_PATH:-}" ]; then
+if [ -z "${LIBCLANG_PATH:-}" ] || [ -z "${CLANG_BASE_PATH:-}" ]; then
     LLVM_DIR=$CACHE/llvm-$LLVM_VERSION
-    if [ ! -e "$LLVM_DIR/lib/libclang.so" ]; then
-        echo "downloading LLVM $LLVM_VERSION (bindgen needs libclang 21+)"
+    if [ ! -e "$LLVM_DIR/lib/libclang.so" ] || [ ! -x "$LLVM_DIR/bin/clang" ]; then
+        echo "downloading LLVM $LLVM_VERSION (libclang 21+ and a native clang; Chromium's download is x64-only)"
         mkdir -p "$LLVM_DIR"
+        LLVM_MAJOR=${LLVM_VERSION%%.*}
         if command -v zstd >/dev/null 2>&1; then
             curl -fsSL -o "$CACHE/llvm.tar.zst" \
                 "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/LLVM-$LLVM_VERSION-$LLVM_ASSET.tar.zst"
             zstd -d --long=30 -c "$CACHE/llvm.tar.zst" |
-                tar -x -C "$LLVM_DIR" --strip-components=1 --wildcards '*/lib/*'
+                tar -x -C "$LLVM_DIR" --strip-components=1 --wildcards \
+                    '*/lib/*' '*/bin/clang' '*/bin/clang++' "*/bin/clang-$LLVM_MAJOR"
             rm -f "$CACHE/llvm.tar.zst"
         else
             curl -fsSL -o "$CACHE/llvm.tar.xz" \
                 "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/LLVM-$LLVM_VERSION-$LLVM_ASSET.tar.xz"
-            tar -xJf "$CACHE/llvm.tar.xz" -C "$LLVM_DIR" --strip-components=1 --wildcards '*/lib/*'
+            tar -xJf "$CACHE/llvm.tar.xz" -C "$LLVM_DIR" --strip-components=1 --wildcards \
+                '*/lib/*' '*/bin/clang' '*/bin/clang++' "*/bin/clang-$LLVM_MAJOR"
             rm -f "$CACHE/llvm.tar.xz"
         fi
     fi
-    export LIBCLANG_PATH=$LLVM_DIR/lib
+    export LIBCLANG_PATH=${LIBCLANG_PATH:-$LLVM_DIR/lib}
+    export CLANG_BASE_PATH=${CLANG_BASE_PATH:-$LLVM_DIR}
 fi
 
 export NUM_JOBS=$JOBS
 export V8_FROM_SOURCE=1
-export GN_ARGS="${GN_ARGS:+$GN_ARGS }v8_enable_i18n_support=false v8_enable_webassembly=false v8_enable_temporal_support=false"
+export GN_ARGS="${GN_ARGS:+$GN_ARGS }v8_enable_i18n_support=false v8_enable_webassembly=false v8_enable_temporal_support=false use_glib=false"
 
 if [ -z "${RUSTFLAGS:-}" ]; then
     for dir in "$HOME"/.rustup/toolchains/*/lib/rustlib/*/bin/gcc-ld; do

@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - .github/workflows/slim-v8.yml
+      - scripts/build-slim-v8.sh
 
 permissions:
   contents: write
@@ -35,6 +36,11 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
             libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 \
             xvfb unzip zstd lld
+      - name: Restore the toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/kaplay-native
+          key: slim-v8-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-slim-v8.sh') }}
       - name: Restore the slim archive
         id: cache
         uses: actions/cache@v4
