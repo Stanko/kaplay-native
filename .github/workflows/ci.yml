@@ -92,6 +92,20 @@ jobs:
             --js-engine v8 --screenshot-raw v8.rgba
           cmp quickjs.rgba v8.rgba
           node scripts/check-frame.mjs v8.rgba 320 240
+      - name: Module imports match across engines
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -o pipefail
+          xvfb-run -a target/release/kaplay-native-host \
+            --dir examples/modules --window 320x240 --frames 1 --no-steam --no-audio \
+            2>&1 | grep -o 'MODULE .*' > modules-quickjs.log
+          xvfb-run -a target/release/kaplay-native-host \
+            --dir examples/modules --window 320x240 --frames 1 --no-steam --no-audio \
+            --js-engine v8 2>&1 | grep -o 'MODULE .*' > modules-v8.log
+          test -s modules-v8.log
+          diff modules-quickjs.log modules-v8.log
       - name: Bridge parity across engines
         shell: bash
         env:

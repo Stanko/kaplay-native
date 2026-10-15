@@ -15,6 +15,11 @@ missing.
   scripts stay classic scripts, like `<script src>` on a page; a preload that
   is only valid as a module is evaluated as one and its named exports become
   globals.
+- Static `import` statements and dynamic `import()` calls resolve from the
+  game files: `./x.js` and `../x.js` are relative to the importing module,
+  `/x.js` is relative to the asset root, and bare specifiers must be bundled.
+  Both engines share the same resolution rules, and a missing module reports
+  the specifier it could not load.
 - `Promise`, `async`/`await` with an explicit job queue pump on both engines.
 - `TextEncoder` and `TextDecoder` (UTF-8) are shimmed. QuickJS does not provide
   them, and the shim keeps them unconditional so V8 behavior is identical.

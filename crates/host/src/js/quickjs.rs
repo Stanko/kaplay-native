@@ -3,9 +3,12 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use kaplay_native_pak::AssetSource;
 use rquickjs::function::Args;
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Function, Runtime};
 
+use super::module::{self, ModuleId};
 use super::{JsArg, Watchdog};
 use crate::bridge;
 use crate::state::HostState;
@@ -20,6 +23,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(state: Rc<HostState>, shim: &str, watchdog: Arc<Watchdog>) -> Result<Self, String> {
         let runtime = Runtime::new().map_err(|error| error.to_string())?;
+        runtime.set_loader(AssetResolver, AssetLoader::new(state.assets.clone()));
         install_watchdog(&runtime, watchdog);
         install_rejection_tracker(&runtime);
         let context = Context::full(&runtime).map_err(|error| error.to_string())?;
@@ -78,6 +82,47 @@ impl Engine {
                 .apply::<()>(&function)
                 .map_err(|error| js_error(&ctx, error))
         })
+    }
+}
+
+struct AssetResolver;
+
+impl Resolver for AssetResolver {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &rquickjs::Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        let base = ModuleId::from_name(base);
+        module::resolve_specifier(&base, name)
+            .map(|id| id.name())
+            .map_err(|error| rquickjs::Error::new_resolving_message(base.name(), name, error))
+    }
+}
+
+struct AssetLoader {
+    assets: Rc<AssetSource>,
+}
+
+impl AssetLoader {
+    fn new(assets: Rc<AssetSource>) -> Self {
+        Self { assets }
+    }
+}
+
+impl Loader for AssetLoader {
+    fn load<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<rquickjs::Module<'js, rquickjs::module::Declared>> {
+        let id = ModuleId::from_name(name);
+        let source = module::read_module(&self.assets, &id)
+            .map_err(|error| rquickjs::Error::new_loading_message(name, error))?;
+        rquickjs::Module::declare(ctx.clone(), name.to_string(), source)
     }
 }
 
@@ -165,8 +210,9 @@ fn evaluate_module_source(ctx: &rquickjs::Ctx<'_>, source: &str) -> Result<(), S
         source.as_bytes().to_vec(),
     )
     .map_err(|error| js_error(ctx, error))?;
-    let (module, _promise) = module.eval().map_err(|error| js_error(ctx, error))?;
+    let (module, promise) = module.eval().map_err(|error| js_error(ctx, error))?;
     run_pending_jobs(ctx);
+    reject_module_evaluation(ctx, &promise)?;
     let namespace = module.namespace().map_err(|error| js_error(ctx, error))?;
     expose_namespace(ctx, &namespace)
 }
@@ -196,10 +242,20 @@ fn evaluate_module(context: &Context, name: &str, source: &str) -> Result<(), St
         let module =
             rquickjs::Module::declare(ctx.clone(), name.to_string(), source.as_bytes().to_vec())
                 .map_err(|error| js_error(&ctx, error))?;
-        module.eval().map_err(|error| js_error(&ctx, error))?;
+        let (_, promise) = module.eval().map_err(|error| js_error(&ctx, error))?;
         run_pending_jobs(&ctx);
-        Ok(())
+        reject_module_evaluation(&ctx, &promise)
     })
+}
+
+fn reject_module_evaluation(
+    ctx: &rquickjs::Ctx<'_>,
+    promise: &rquickjs::Promise<'_>,
+) -> Result<(), String> {
+    match promise.result::<rquickjs::Value>() {
+        Some(Err(error)) => Err(js_error(ctx, error)),
+        _ => Ok(()),
+    }
 }
 
 fn js_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> String {
@@ -263,9 +319,113 @@ unsafe fn log_exception(ctx: *mut rquickjs::qjs::JSContext) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    use kaplay_native_pak::AssetSource;
     use rquickjs::{Context, Runtime};
 
-    use super::{evaluate_module, evaluate_preload, evaluate_script_source, run_pending_jobs};
+    use super::{
+        evaluate_module, evaluate_preload, evaluate_script_source, run_pending_jobs, AssetLoader,
+        AssetResolver,
+    };
+
+    fn fixture(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kap-quickjs-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        for (path, source) in files {
+            let full = dir.join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&full, source).unwrap();
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn with_fixture<T>(name: &str, files: &[(&str, &str)], test: impl FnOnce(&Context) -> T) -> T {
+        let dir = fixture(name, files);
+        let runtime = Runtime::new().unwrap();
+        runtime.set_loader(
+            AssetResolver,
+            AssetLoader::new(Rc::new(AssetSource::from_dir(&dir))),
+        );
+        let context = Context::full(&runtime).unwrap();
+        let result = test(&context);
+        std::fs::remove_dir_all(dir).ok();
+        result
+    }
+
+    #[test]
+    fn module_imports_resolve_from_the_game_files() {
+        with_fixture(
+            "imports",
+            &[
+                (
+                    "entry.js",
+                    "import { answer } from './chunk.js'; globalThis.answer = answer;",
+                ),
+                ("chunk.js", "export const answer = 42;"),
+            ],
+            |context| {
+                evaluate_module(
+                    context,
+                    "entry.js",
+                    "import { answer } from './chunk.js'; globalThis.answer = answer;",
+                )
+                .unwrap();
+                context.with(|ctx| {
+                    let answer: i32 = ctx.eval("globalThis.answer").unwrap();
+                    assert_eq!(answer, 42);
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn dynamic_imports_return_the_module_namespace() {
+        with_fixture(
+            "dynamic",
+            &[
+                (
+                    "entry.js",
+                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; });",
+                ),
+                ("chunk.js", "export const answer = 7;"),
+            ],
+            |context| {
+                evaluate_module(
+                    context,
+                    "entry.js",
+                    "import('./chunk.js').then((module) => { globalThis.dynamic = module.answer; });",
+                )
+                .unwrap();
+                context.with(|ctx| {
+                    let dynamic: i32 = ctx.eval("globalThis.dynamic").unwrap();
+                    assert_eq!(dynamic, 7);
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn missing_imports_report_the_specifier() {
+        with_fixture("missing", &[("entry.js", "")], |context| {
+            let error = evaluate_module(context, "entry.js", "import './nope.js';").unwrap_err();
+            assert!(error.contains("nope.js"), "{error}");
+            assert!(error.contains("not found"), "{error}");
+        });
+    }
+
+    #[test]
+    fn module_evaluation_errors_are_reported() {
+        with_fixture("throwing", &[("entry.js", "")], |context| {
+            let error =
+                evaluate_module(context, "entry.js", "throw new Error('boom');").unwrap_err();
+            assert!(error.contains("boom"), "{error}");
+        });
+    }
 
     #[test]
     fn logs_and_continues_after_a_failed_job() {

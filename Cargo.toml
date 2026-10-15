@@ -43,7 +43,7 @@ symphonia = { version = "0.6", default-features = false, features = [
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 ureq = { version = "3", features = ["gzip"] }
 png = "0.18"
-rquickjs = { version = "0.14", default-features = false, features = ["std", "array-buffer"] }
+rquickjs = { version = "0.14", default-features = false, features = ["std", "array-buffer", "loader"] }
 v8 = { version = "=152.2.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

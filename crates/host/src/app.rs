@@ -575,20 +575,31 @@ impl HostApp {
         }
 
         let preloads = self.config.preload.clone();
-        let script_source = if let Some(script) = &self.config.script {
-            std::fs::read_to_string(script).ok()
+        let entry_source = if let Some(script) = &self.config.script {
+            std::fs::read_to_string(script).ok().map(|source| {
+                let name = script
+                    .canonicalize()
+                    .unwrap_or_else(|_| script.clone())
+                    .to_string_lossy()
+                    .into_owned();
+                (name, source)
+            })
         } else {
-            let entry = ["index.html", "public/index.html"]
+            let from_html = ["index.html", "public/index.html"]
                 .iter()
                 .find_map(|path| state.assets.read_text(path))
-                .and_then(|html| find_module_entry(&html));
-            entry
-                .and_then(|path| state.assets.read_text(&path))
-                .or_else(|| {
-                    ["main.js", "game/main.js", "index.js"]
-                        .iter()
-                        .find_map(|path| state.assets.read_text(path))
-                })
+                .and_then(|html| find_module_entry(&html))
+                .and_then(|path| state.assets.read_text(&path).map(|source| (path, source)));
+            from_html.or_else(|| {
+                ["main.js", "game/main.js", "index.js"]
+                    .iter()
+                    .find_map(|path| {
+                        state
+                            .assets
+                            .read_text(path)
+                            .map(|source| ((*path).to_string(), source))
+                    })
+            })
         };
         let mut preload_sources: Vec<String> = Vec::new();
         for preload in &preloads {
@@ -602,8 +613,8 @@ impl HostApp {
                 log::error!("preload error: {error}");
             }
         }
-        if let Some(source) = script_source {
-            if let Err(error) = js.eval_module("game", &source) {
+        if let Some((name, source)) = entry_source {
+            if let Err(error) = js.eval_module(&name, &source) {
                 log::error!("script error: {error}");
             }
         }

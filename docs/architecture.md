@@ -37,6 +37,11 @@ Startup runs in four steps:
    `<script type="module">` in a browser. Top-level declarations stay
    module-scoped, which prevents game functions from colliding with the
    globals KAPLAY exports onto `window` (`UP`, `LEFT`, `RED`, and so on).
+   Static `import` statements and dynamic `import()` calls load from the game
+   files: relative specifiers resolve against the importing module, and root
+   specifiers resolve against the asset root. A specifier that cannot be
+   resolved fails evaluation with the offending specifier and importer in the
+   message.
 
 After every evaluation the host pumps the microtask queue. The pump runs each
 job through `JS_ExecutePendingJob` directly instead of rquickjs's wrapper,

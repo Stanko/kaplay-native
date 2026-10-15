@@ -140,7 +140,10 @@ kaplay-native-host --dir path/to/game/dist --window 1280x720
 The entry script is evaluated as an ES module, like
 `<script type="module">` in a browser. Top-level declarations stay
 module-scoped, so they cannot collide with globals that KAPLAY or another
-library exports onto `window`.
+library exports onto `window`. Imports between chunks resolve from the same
+directory, including the relative imports Vite emits for code splitting and
+`import()` calls for lazy chunks, so a production build with multiple chunks
+runs as-is.
 
 ## Bundling from source
 
