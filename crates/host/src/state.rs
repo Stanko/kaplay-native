@@ -79,8 +79,8 @@ impl HostState {
         id
     }
 
-    pub fn open_video(&self, bytes: &[u8]) -> Option<VideoInfo> {
-        let video = Video::open(bytes.to_vec())
+    pub fn open_video(&self, bytes: Arc<[u8]>) -> Option<VideoInfo> {
+        let video = Video::open(bytes)
             .map_err(|error| log::warn!("video: {error}"))
             .ok()?;
         let id = self.next_video.get();
@@ -95,8 +95,31 @@ impl HostState {
         Some(info)
     }
 
+    pub fn open_video_asset(&self, path: &str) -> Option<VideoInfo> {
+        let Some(bytes) = self.assets.read(path) else {
+            log::warn!("video asset not found: {path}");
+            return None;
+        };
+        self.open_video(bytes)
+    }
+
+    pub fn decode_audio_asset(&self, request: u32, path: &str) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let bytes = self.assets.read(path).unwrap_or_else(|| Arc::from(&[][..]));
+        audio.decode_async(request, bytes);
+    }
+
     pub fn close_video(&self, id: u32) {
         self.videos.borrow_mut().remove(&id);
+    }
+
+    pub fn video_frame_ready(&self, id: u32, time: f64) -> bool {
+        self.videos
+            .borrow_mut()
+            .get_mut(&id)
+            .is_some_and(|video| video.frame_ready(time))
     }
 
     pub fn upload_video_frame(
@@ -112,13 +135,10 @@ impl HostState {
         let Some(video) = videos.get_mut(&id) else {
             return;
         };
-        let frame = match video.frame_at(time) {
-            Ok(frame) => frame,
-            Err(error) => {
-                log::warn!("video frame: {error}");
-                return;
-            }
-        };
+        if let Some(error) = video.take_error() {
+            log::warn!("video frame: {error}");
+        }
+        let frame = video.frame_at(time);
         let options = UploadOptions {
             flip_y: self.gl.borrow().upload_options().flip_y,
             premultiply: false,

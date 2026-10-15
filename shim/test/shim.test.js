@@ -793,8 +793,8 @@ test("video elements open, play, and advance their clock", async () => {
     advance(1);
     await playing;
 
-    const opened = stub.calls.filter((call) => call.name === "video.open").at(-1);
-    assert.deepEqual(opened.args, [6]);
+    const opened = stub.calls.filter((call) => call.name === "video.openAsset").at(-1);
+    assert.deepEqual(opened.args, ["video/intro.mp4"]);
     assert.equal(element.paused, false);
     assert.equal(element.videoWidth, 160);
     assert.equal(element.videoHeight, 120);
@@ -831,7 +831,7 @@ test("video elements fire ended at the end of playback", async () => {
     assert.equal(element.currentTime, 1);
 });
 
-test("video elements decode their audio through the media element path", async () => {
+test("video elements play their audio through the bundle", async () => {
     stub.files.set("video/battle.mp4", new Uint8Array([1, 2, 3, 4]));
     const element = document.createElement("video");
     element.src = "video/battle.mp4";
@@ -839,10 +839,48 @@ test("video elements decode their audio through the media element path", async (
     const playing = element.play();
     advance(1);
     await playing;
-    const decode = stub.calls.filter((call) => call.name === "audio.decode").at(-1);
-    assert.deepEqual(decode.args.slice(1), [4]);
+    const decode = stub.calls.filter((call) => call.name === "audio.decodeAsset").at(-1);
+    assert.equal(decode.args[1], "video/battle.mp4");
     const play = stub.calls.filter((call) => call.name === "audio.play").at(-1);
     assert.ok(Math.abs(play.args[2] - 0.5) < 1e-6);
+});
+
+test("video sources outside the bundle decode from fetched bytes", async () => {
+    const element = document.createElement("video");
+    element.src = "data:video/mp4;base64,AQIDBA==";
+    const playing = element.play();
+    advance(1);
+    await playing;
+    const opened = stub.calls.filter((call) => call.name === "video.open").at(-1);
+    assert.deepEqual(opened.args, [4]);
+    const decode = stub.calls.filter((call) => call.name === "audio.decode").at(-1);
+    assert.deepEqual(decode.args.slice(1), [4]);
+});
+
+test("video readiness tracks decoded frames and resolves seeks", async () => {
+    stub.files.set("video/ready.mp4", new Uint8Array([1, 2]));
+    const element = document.createElement("video");
+    element.src = "video/ready.mp4";
+    assert.equal(element.readyState, 0);
+    assert.equal(element.networkState, 1);
+    const events = [];
+    element.addEventListener("seeking", () => events.push("seeking"));
+    element.addEventListener("seeked", () => events.push("seeked"));
+    const playing = element.play();
+    advance(1);
+    await playing;
+    assert.equal(element.readyState, 2);
+    assert.equal(element.networkState, 1);
+
+    const video = stub.videos.get(element.__nativeId);
+    video.ready = false;
+    element.currentTime = 0.25;
+    assert.deepEqual(events, ["seeking"]);
+    assert.equal(element.readyState, 1);
+    video.ready = true;
+    advance(100);
+    assert.deepEqual(events, ["seeking", "seeked"]);
+    assert.equal(element.readyState, 2);
 });
 
 test("video textures upload the frame at the current time", async () => {

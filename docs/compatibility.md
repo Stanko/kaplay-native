@@ -132,16 +132,19 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
 - `HTMLVideoElement` (`document.createElement("video")`) plays H.264 MP4 files
   bundled with the game (or served over HTTP(S) with `--allow-network`):
   `play`, `pause`, `load`, `currentTime`, `duration`, `loop`, `muted`,
-  `volume`, `playbackRate`, `videoWidth`, `videoHeight`,
-  `canPlayType("video/mp4")`, and the `loadedmetadata`, `loadeddata`, `canplay`,
-  `playing`, `timeupdate`, `ended`, and `error` events. Frames decode on
-  background threads and are drawn with `gl.texImage2D(target, level,
+  `volume`, `playbackRate`, `videoWidth`, `videoHeight`, `currentSrc`,
+  `readyState`, `networkState`, `error`, `canPlayType("video/mp4")`, and the
+  `loadedmetadata`, `loadeddata`, `canplay`, `playing`, `seeking`, `seeked`,
+  `timeupdate`, `ended`, and `error` events. A worker thread decodes ahead of
+  the playhead; `readyState` reports `HAVE_CURRENT_DATA` once the frame at
+  `currentTime` is decoded, so a paused seek resolves through `seeked` when its
+  frame arrives. Frames are drawn with `gl.texImage2D(target, level,
   internalformat, format, type, video)`, which is the path KAPLAY's `video()`
   component uses. An audio track plays through the same mixer as
   `HTMLAudioElement`; a silent file plays without one. WebM, VP8/VP9, and AV1
   are not supported.
-- Decoding supports WAV, MP3, FLAC, Ogg Vorbis, and Opus, from bundled files,
-  data URLs, and HTTP(S) URLs.
+- Decoding supports WAV, MP3, FLAC, Ogg Vorbis, Opus, and the AAC track of an
+  MP4, from bundled files, data URLs, and HTTP(S) URLs.
 - `AudioWorklet`, `AnalyserNode`, `BiquadFilterNode`, `OscillatorNode`, and
   `AudioContext.createMediaStreamSource` are not implemented. Without an audio
   device the engine runs silently and playback still advances in real time.

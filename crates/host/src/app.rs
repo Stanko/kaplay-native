@@ -302,11 +302,12 @@ impl Inner {
         self.state
             .gl
             .borrow_mut()
-            .present(size.width as i32, size.height as i32);
-        self.window.pre_present_notify();
-        if let Err(error) = self.gl_surface.swap_buffers(&self.gl_context) {
-            log::error!("swap buffers: {error}");
-        }
+            .present(size.width as i32, size.height as i32, || {
+                self.window.pre_present_notify();
+                if let Err(error) = self.gl_surface.swap_buffers(&self.gl_context) {
+                    log::error!("swap buffers: {error}");
+                }
+            });
     }
 }
 

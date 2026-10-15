@@ -5,6 +5,18 @@ export function installStub() {
     const images = new Map();
     const canvases = new Map();
     const videos = new Map();
+
+    function finishDecode(request) {
+        const id = nextId();
+        audioBuffers.set(id, { sampleRate: 48000, channels: 2, frames: 4800, data: null });
+        globalThis.__kapNative_onAudioDecoded(request, id, true, "");
+    }
+
+    function openVideo() {
+        const id = nextId();
+        videos.set(id, { width: 160, height: 120, duration: 1, ready: true });
+        return { id, width: 160, height: 120, duration: 1 };
+    }
     const netRoutes = new Map();
     const netResponses = new Map();
     const netMessages = new Map();
@@ -183,11 +195,17 @@ export function installStub() {
         video: {
             open: (bytes) => {
                 record("video.open", [bytes.length]);
-                const id = nextId();
-                videos.set(id, { width: 160, height: 120, duration: 1 });
-                return { id, width: 160, height: 120, duration: 1 };
+                return openVideo();
+            },
+            openAsset: (path) => {
+                record("video.openAsset", [String(path)]);
+                return openVideo();
             },
             close: (id) => record("video.close", [id]),
+            ready: (id) => {
+                const video = videos.get(id);
+                return Boolean(video && video.ready);
+            },
         },
         audio: {
             available: () => true,
@@ -196,9 +214,11 @@ export function installStub() {
             setPaused: (paused) => record("audio.setPaused", [paused]),
             decode: (request, bytes) => {
                 record("audio.decode", [request, bytes.length]);
-                const id = nextId();
-                audioBuffers.set(id, { sampleRate: 48000, channels: 2, frames: 4800, data: null });
-                globalThis.__kapNative_onAudioDecoded(request, id, true, "");
+                finishDecode(request);
+            },
+            decodeAsset: (request, path) => {
+                record("audio.decodeAsset", [request, String(path)]);
+                finishDecode(request);
             },
             uploadBuffer: (sampleRate, channels, data) => {
                 const id = nextId();

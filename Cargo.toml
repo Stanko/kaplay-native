@@ -40,6 +40,8 @@ symphonia = { version = "0.6", default-features = false, features = [
     "vorbis",
     "wav",
     "mp3",
+    "isomp4",
+    "aac",
 ] }
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 ureq = { version = "3", features = ["gzip"] }

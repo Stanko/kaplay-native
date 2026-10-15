@@ -15,7 +15,7 @@
         "src"
     ],
     "scripts": {
-        "test": "node --test ../shim/test/shim.test.js"
+        "test": "node --test test/*.test.mjs ../shim/test/shim.test.js"
     },
     "license": "MIT",
     "engines": {

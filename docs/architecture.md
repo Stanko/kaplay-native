@@ -163,12 +163,20 @@ Video takes a parallel path. `kaplay-native-video` demuxes an MP4 with
 `rusty_h264-decoder`, both pure Rust, so there is no C dependency and no
 assembly build step. `Video::open` probes the container, requires an H.264
 track, converts `avcC` to Annex-B parameter sets, and rewrites the
-length-prefixed samples as Annex-B access units. A decoded-frame window keeps
-the frames around the play position, and `frame_at(seconds)` decodes forward or
-seeks backward on demand. The shim's `HTMLVideoElement` owns the clock and asks
-for a frame; `gl.texImage2D` with a video source uploads that frame as an RGBA
-texture. Audio from the same file is handed to the audio decoder, so the video's
-sound plays through the regular mixer as a media element voice.
+length-prefixed samples as Annex-B access units.
+
+Decoding runs on a worker thread per open video, owned by the `Video` handle,
+so the frame thread never probes, seeks, or decodes. The worker keeps a
+decoded-frame window of up to 32 frames and 64 MiB around the playhead, decodes
+forward while the window has room and stays inside the lookahead, and re-probes
+the container when the shim seeks backward or jumps ahead. The shim's
+`HTMLVideoElement` owns the clock, asks `frame_at(seconds)` for the newest
+decoded frame at or before that time, and reports `readyState` from a
+`frame_ready` query, which also nudges the worker toward a pending seek.
+`gl.texImage2D` with a video source uploads that frame as an RGBA texture.
+Audio from the same file is handed to the audio decoder (read from the asset
+when the source is bundled), so the video's sound plays through the regular
+mixer as a media element voice.
 
 ## The default framebuffer
 

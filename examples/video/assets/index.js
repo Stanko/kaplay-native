@@ -44,6 +44,14 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+function waitForFrame(callback) {
+    if (video.readyState >= 2) {
+        callback();
+        return;
+    }
+    requestAnimationFrame(() => waitForFrame(callback));
+}
+
 async function show(time) {
     video.currentTime = time;
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
@@ -59,6 +67,7 @@ async function show(time) {
 video.play()
     .then(() => {
         video.pause();
-        return show(0.5);
+        video.currentTime = 0.5;
+        waitForFrame(() => show(0.5));
     })
     .catch((error) => console.log("VIDEO ERROR", error.message));

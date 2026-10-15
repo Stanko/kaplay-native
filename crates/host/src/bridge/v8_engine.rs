@@ -1,11 +1,12 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use kaplay_native_canvas2d::ImageSource;
 use kaplay_native_gfx::pixels::UploadOptions;
 use v8::{FunctionCallbackArguments, Local, PinScope, ReturnValue, Value};
 
 use super::{handle, option_handle, parse_headers, source_size};
-use crate::state::HostState;
+use crate::state::{HostState, VideoInfo};
 
 type Args<'s> = FunctionCallbackArguments<'s>;
 type Rv<'s> = ReturnValue<'s, Value>;
@@ -817,15 +818,31 @@ fn net_read_message<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv
 fn install_video(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Local<Value>) {
     let object = v8::Object::new(scope);
     register(scope, object, "open", video_open, data);
+    register(scope, object, "openAsset", video_open_asset, data);
     register(scope, object, "close", video_close, data);
+    register(scope, object, "ready", video_ready, data);
     set_property(scope, native, "video", object.into());
 }
 
 fn video_open<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {
     let state = host(&args);
-    let Some(info) = with_u8(args.get(0), |bytes| state.open_video(bytes)).flatten() else {
+    let Some(info) = with_u8(args.get(0), |bytes| state.open_video(Arc::from(bytes))).flatten()
+    else {
         return;
     };
+    video_info(scope, &mut rv, &info);
+}
+
+fn video_open_asset<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {
+    let state = host(&args);
+    let path = string_arg(scope, &args, 0);
+    let Some(info) = state.open_video_asset(&path) else {
+        return;
+    };
+    video_info(scope, &mut rv, &info);
+}
+
+fn video_info(scope: &mut PinScope<'_, '_>, rv: &mut Rv<'_>, info: &VideoInfo) {
     let object = v8::Object::new(scope);
     set_property(
         scope,
@@ -859,6 +876,13 @@ fn video_close<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, _rv: Rv<'s>
     host(&args).close_video(id);
 }
 
+fn video_ready<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {
+    let id = u32_arg(scope, &args, 0);
+    let time = f64_arg(scope, &args, 1);
+    let ready = host(&args).video_frame_ready(id, time);
+    rv.set_bool(ready);
+}
+
 fn install_audio(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Local<Value>) {
     let object = v8::Object::new(scope);
     register(scope, object, "available", audio_available, data);
@@ -866,6 +890,7 @@ fn install_audio(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Loca
     register(scope, object, "currentTime", audio_current_time, data);
     register(scope, object, "setPaused", audio_set_paused, data);
     register(scope, object, "decode", audio_decode, data);
+    register(scope, object, "decodeAsset", audio_decode_asset, data);
     register(scope, object, "uploadBuffer", audio_upload_buffer, data);
     register(scope, object, "bufferInfo", audio_buffer_info, data);
     register(scope, object, "readChannel", audio_read_channel, data);
@@ -914,9 +939,16 @@ fn audio_decode<'s, 'i>(_scope: &mut PinScope<'s, 'i>, args: Args<'s>, _rv: Rv<'
     let request = u32_arg(_scope, &args, 0);
     with_u8(args.get(1), |data| {
         if let Some(audio) = state.audio.as_ref() {
-            audio.decode_async(request, data.to_vec());
+            audio.decode_async(request, Arc::from(data));
         }
     });
+}
+
+fn audio_decode_asset<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, _rv: Rv<'s>) {
+    let state = host(&args);
+    let request = u32_arg(scope, &args, 0);
+    let path = string_arg(scope, &args, 1);
+    state.decode_audio_asset(request, &path);
 }
 
 fn audio_upload_buffer<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {

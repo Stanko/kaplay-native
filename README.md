@@ -36,8 +36,8 @@ for the manual validation checklist.
 - Network: `fetch` (HTTP/HTTPS) and `WebSocket` (ws/wss) on background threads
 - Audio: Web Audio nodes over a native software mixer, plus `HTMLAudioElement`
   music, decoding WAV, MP3, FLAC, Ogg Vorbis, and Opus
-- Video: `HTMLVideoElement` over a native H.264 MP4 decoder, drawn with
-  `gl.texImage2D` (the path KAPLAY's `video()` component uses)
+- Video: `HTMLVideoElement` over a threaded, pure-Rust H.264 MP4 decoder,
+  drawn with `gl.texImage2D` (the path KAPLAY's `video()` component uses)
 - Assets: directory or `.pak` archives
 - Steam: dynamic `steam_api` loading, user, achievements, stats, cloud storage
 - Engines: QuickJS by default, optional V8 backend for full modern JS and `Intl`

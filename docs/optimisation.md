@@ -49,8 +49,8 @@ Cargo changes on this branch:
   `std` and `array-buffer`.
 - `env_logger` no longer pulls `regex`/`regex-automata`/`aho-corasick`
   (~600 KB) for log filtering.
-- `symphonia` drops `all-meta`, `adpcm`, `isomp4` and `aac`. The documented
-  formats (WAV, MP3, FLAC, Ogg Vorbis, Opus) are unchanged.
+- `symphonia` drops `all-meta` and `adpcm`. `isomp4` and `aac` come back with
+  video support, which demuxes MP4 and plays the AAC track of a cutscene.
 
 ### Link-time folding
 

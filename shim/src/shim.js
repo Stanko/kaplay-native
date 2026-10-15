@@ -2089,16 +2089,36 @@
         }
     }
 
-    function decodeAudio(bytes) {
+    function decodeAudio(request, start) {
         return new Promise((resolve, reject) => {
-            if (!audioBridge || typeof audioBridge.decode !== "function") {
-                reject(new Error("audio decoding is not available"));
-                return;
-            }
-            const request = nextAudioRequest++;
             pendingDecodes.set(request, { resolve, reject });
-            audioBridge.decode(request, bytesView(bytes));
+            try {
+                start();
+            } catch (error) {
+                pendingDecodes.delete(request);
+                reject(error);
+            }
         });
+    }
+
+    function decodeAudioBytes(bytes) {
+        if (!audioBridge || typeof audioBridge.decode !== "function") {
+            return Promise.reject(new Error("audio decoding is not available"));
+        }
+        const request = nextAudioRequest++;
+        return decodeAudio(request, () => audioBridge.decode(request, bytesView(bytes)));
+    }
+
+    function decodeAudioAsset(path) {
+        if (!audioBridge || typeof audioBridge.decodeAsset !== "function") {
+            return Promise.reject(new Error("audio decoding is not available"));
+        }
+        const request = nextAudioRequest++;
+        return decodeAudio(request, () => audioBridge.decodeAsset(request, String(path)));
+    }
+
+    function isBundleAsset(url) {
+        return Boolean(url) && !/^[a-z][a-z0-9+.-]*:/i.test(url) && native.fs.size(url) >= 0;
     }
 
     class HTMLAudioElement {
@@ -2170,9 +2190,7 @@
                 return Promise.resolve();
             }
             if (!this.__ready) {
-                this.__ready = fetchResource(this.src)
-                    .then((response) => response.arrayBuffer())
-                    .then((bytes) => this.__decode(bytes));
+                this.__ready = this.__loadSource();
             }
             return this.__ready
                 .then(() => {
@@ -2199,12 +2217,27 @@
 
         __adoptBytes(bytes) {
             if (!this.__decodePromise) {
-                this.__decodePromise = decodeAudio(bytes).then((buffer) => {
+                this.__decodePromise = decodeAudioBytes(bytes).then((buffer) => {
                     this.__buffer = buffer;
                     this.duration = buffer.duration;
                     return buffer;
                 });
             }
+            return this.__decodePromise;
+        }
+
+        __loadSource() {
+            if (this.__decodePromise) return this.__decodePromise;
+            this.__decodePromise = (isBundleAsset(this.src)
+                ? decodeAudioAsset(this.src)
+                : fetchResource(this.src)
+                    .then((response) => response.arrayBuffer())
+                    .then((bytes) => decodeAudioBytes(bytes)))
+                .then((buffer) => {
+                    this.__buffer = buffer;
+                    this.duration = buffer.duration;
+                    return buffer;
+                });
             return this.__decodePromise;
         }
 
@@ -2278,12 +2311,17 @@
             this.crossOrigin = null;
             this.playsInline = false;
             this.autoplay = false;
+            this.preload = "auto";
+            this.width = 0;
+            this.height = 0;
             this.onended = null;
+            this.error = null;
             this.paused = true;
             this.ended = false;
             this.duration = NaN;
             this.videoWidth = 0;
             this.videoHeight = 0;
+            this.__networkState = 0;
             this.__loop = false;
             this.__volume = 1;
             this.__muted = false;
@@ -2293,12 +2331,29 @@
             this.__nativeId = 0;
             this.__ready = null;
             this.__timer = 0;
+            this.__readyTimer = 0;
+            this.__dataFired = false;
+            this.__seekPending = false;
             this.__listeners = makeListeners();
             this.__audio = new HTMLAudioElement(this.__src);
         }
 
         get src() {
             return this.__src;
+        }
+
+        get currentSrc() {
+            return this.__src;
+        }
+
+        get networkState() {
+            return this.__networkState;
+        }
+
+        get readyState() {
+            if (!this.__nativeId) return 0;
+            if (this.ended) return 2;
+            return native.video.ready(this.__nativeId, this.currentTime) ? 2 : 1;
         }
 
         set src(value) {
@@ -2364,6 +2419,9 @@
             this.__startedAt = audioNow();
             this.ended = false;
             this.__audio.currentTime = this.__base;
+            this.__seekPending = true;
+            this.__fire("seeking");
+            this.__startReadyTimer();
         }
 
         play() {
@@ -2412,7 +2470,12 @@
             this.duration = NaN;
             this.videoWidth = 0;
             this.videoHeight = 0;
+            this.error = null;
+            this.__networkState = this.__src ? 1 : 0;
+            this.__dataFired = false;
+            this.__seekPending = false;
             this.__stopTicking();
+            this.__stopReadyTimer();
             this.__audio = new HTMLAudioElement(this.__src);
         }
 
@@ -2435,22 +2498,69 @@
                 return this.__ready;
             }
             const url = this.__src;
-            this.__ready = fetchResource(url)
-                .then((response) => response.arrayBuffer())
-                .then((bytes) => {
-                    const info = native.video.open(bytesView(bytes));
-                    if (!info) throw new Error("unsupported video: " + url);
+            this.__networkState = 2;
+            this.__ready = this.__open(url)
+                .then((info) => {
                     this.__nativeId = info.id;
                     this.videoWidth = info.width;
                     this.videoHeight = info.height;
                     this.duration = info.duration > 0 ? info.duration : NaN;
-                    this.__audio.__adoptBytes(bytes).catch(() => {});
+                    this.__networkState = 1;
+                    this.__dataFired = false;
                     this.__fire("loadedmetadata");
-                    this.__fire("loadeddata");
-                    this.__fire("canplay");
+                    this.__startReadyTimer();
                     return info;
+                })
+                .catch((error) => {
+                    this.__networkState = 3;
+                    this.error = { code: 4, message: String((error && error.message) || error) };
+                    throw error;
                 });
             return this.__ready;
+        }
+
+        __open(url) {
+            if (!native.video) return Promise.reject(new Error("video playback is not available"));
+            const relative = isBundleAsset(url);
+            if (relative && typeof native.video.openAsset === "function") {
+                const info = native.video.openAsset(url);
+                if (info) return Promise.resolve(info);
+            }
+            return fetchResource(url)
+                .then((response) => response.arrayBuffer())
+                .then((bytes) => {
+                    const info = native.video.open(bytesView(bytes));
+                    if (!info) throw new Error("unsupported video: " + url);
+                    this.__audio.__adoptBytes(bytes).catch(() => {});
+                    return info;
+                });
+        }
+
+        __startReadyTimer() {
+            if (this.__readyTimer) return;
+            this.__checkFrame();
+            this.__readyTimer = setIntervalFn(() => this.__checkFrame(), 100);
+        }
+
+        __stopReadyTimer() {
+            if (!this.__readyTimer) return;
+            clearTimer(this.__readyTimer);
+            this.__readyTimer = 0;
+        }
+
+        __checkFrame() {
+            if (!this.__nativeId) return;
+            if (!this.__dataFired && this.readyState >= 2) {
+                this.__dataFired = true;
+                this.__fire("loadeddata");
+                this.__fire("canplay");
+            }
+            if (this.__seekPending && this.readyState >= 2) {
+                this.__seekPending = false;
+                this.__fire("timeupdate");
+                this.__fire("seeked");
+            }
+            if (this.__dataFired && !this.__seekPending) this.__stopReadyTimer();
         }
 
         __startTicking() {
@@ -2467,6 +2577,7 @@
 
         __tick() {
             if (this.paused) return;
+            this.__checkFrame();
             this.__fire("timeupdate");
             if (
                 !this.__loop
