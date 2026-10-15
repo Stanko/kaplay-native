@@ -4,6 +4,13 @@
   bundle passed with `--preload`.
 - `smoke` - raw WebGL without KAPLAY: clears the screen, uploads a textured
   quad, and captures a screenshot. Used as the CI smoke test.
+- `modules` - a multi-chunk ES module build: the entry imports a sibling chunk,
+  loads another chunk with `import()`, checks that both share one chunk
+  instance, and reads the canvas and title from `index.html`. Used as the CI
+  module-resolution test.
+- `video` - decodes an H.264 MP4 with `document.createElement("video")`, uploads
+  the frame with `gl.texImage2D`, and reads the pixel back. Used as the CI
+  video-playback test.
 - `steam` - KAPLAY demo for Steamworks: player/stat/achievement and cloud
   status, with Space/A/S/D to write the cloud file, unlock
   `ACH_WIN_ONE_GAME`, add a `NumWins` stat, and delete the cloud file. Requires
@@ -12,5 +19,7 @@
 
 ```sh
 cargo run -p kaplay-native-host -- --script examples/smoke/main.js --dir examples/smoke --frames 5 --screenshot smoke.png
+cargo run -p kaplay-native-host -- --dir examples/modules --frames 1
+cargo run -p kaplay-native-host -- --dir examples/video --frames 40
 cargo run -p kaplay-native-host -- --script examples/hello/main.js --preload path/to/kaplay.js --dir examples/hello
 ```

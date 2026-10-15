@@ -936,6 +936,15 @@
                     type,
                     source.__id,
                 );
+            } else if (source instanceof HTMLVideoElement) {
+                native.gl.texImage2DVideo(
+                    target,
+                    internalformat,
+                    format,
+                    type,
+                    source.__nativeId,
+                    source.currentTime,
+                );
             } else if (source instanceof Image) {
                 native.gl.texImage2DImage(target, internalformat, format, type, source.__id);
             } else if (source instanceof ImageData) {
@@ -1758,8 +1767,11 @@
         }
 
         __currentValue() {
+            return this.__valueAt(audioNow());
+        }
+
+        __valueAt(now) {
             if (!this.__events.length) return this.__value;
-            const now = audioNow();
             let value = this.__value;
             let previousTime = -Infinity;
             for (const event of this.__events) {
@@ -1958,6 +1970,8 @@
             this.__startTime = 0;
             this.__stopTime = -1;
             this.__listeners = makeListeners();
+            this.__ownedBuffers = [];
+            this.__renderedGraph = false;
         }
 
         get loop() {
@@ -1982,12 +1996,19 @@
             if (duration !== undefined) {
                 this.__stopTime = this.__startTime + (Number(duration) || 0);
             }
-            if (this.buffer) this.__createVoice();
+            if (this.buffer) {
+                if (filterPaths(this).some((path) => path.some((node) => node instanceof BiquadFilterNode))) {
+                    setTimeoutFn(() => this.__createVoice(), 0);
+                } else {
+                    this.__createVoice();
+                }
+            }
         }
 
         stop(when = 0) {
             if (!this.__started) return;
             const time = Number(when) || 0;
+            this.__stopTime = time;
             if (this.__voice >= 0) {
                 if (time > audioNow()) {
                     if (audioBridge && audioBridge.stopAt) {
@@ -2005,11 +2026,18 @@
         }
 
         __createVoice() {
-            const buffer = this.buffer;
+            let buffer = this.buffer;
             if (!buffer || !audioAvailable()) return;
+            const duration = this.__stopTime > this.__startTime ? this.__stopTime - this.__startTime : buffer.duration;
+            const rendered = renderFiltered(this, buffer, this.__startTime, duration, this.__offset);
+            if (rendered) {
+                buffer = rendered;
+                this.__renderedGraph = true;
+            }
             const nativeId = buffer.__upload();
             if (!nativeId) return;
-            const params = graphParams(this);
+            if (rendered || this instanceof OscillatorNode) this.__ownedBuffers.push(nativeId);
+            const params = this.__renderedGraph ? { gain: 1, pan: 0 } : graphParams(this);
             const startFrame = this.__startTime > audioNow() ? this.__startTime * this.context.sampleRate : -1;
             const voice = audioBridge.play(
                 nativeId,
@@ -2017,7 +2045,7 @@
                 params.pan,
                 this.playbackRate.__currentValue(),
                 this.loop,
-                this.__offset,
+                rendered ? 0 : this.__offset,
                 startFrame,
             );
             if (voice < 0) return;
@@ -2030,7 +2058,7 @@
 
         __syncAudio() {
             if (this.__voice < 0) return;
-            const params = graphParams(this);
+            const params = this.__renderedGraph ? { gain: 1, pan: 0 } : graphParams(this);
             audioBridge.setGain(this.__voice, params.gain);
             audioBridge.setPan(this.__voice, params.pan);
             audioBridge.setRate(this.__voice, this.playbackRate.__currentValue());
@@ -2042,6 +2070,9 @@
         }
 
         __fireEnded() {
+            for (const id of this.__ownedBuffers.splice(0)) {
+                if (audioBridge && audioBridge.freeBuffer) audioBridge.freeBuffer(id);
+            }
             const event = makeEvent("ended", {});
             event.target = this;
             try {
@@ -2058,6 +2089,124 @@
 
         removeEventListener(type, fn) {
             this.__listeners.remove(type, fn);
+        }
+    }
+
+    class BiquadFilterNode extends AudioNode {
+        constructor(context) {
+            super(context);
+            this.type = "lowpass";
+            this.frequency = new AudioParam(350, this);
+            this.detune = new AudioParam(0, this);
+            this.Q = new AudioParam(1, this);
+            this.gain = new AudioParam(0, this);
+        }
+    }
+
+    function filterPaths(source) {
+        const paths = [];
+        const visit = (node, path) => {
+            if (path.includes(node) || path.length > 32) return;
+            if (node.__isDestination) {
+                paths.push(path);
+                return;
+            }
+            for (const out of node.__outs) visit(out, [...path, node]);
+        };
+        for (const out of source.__outs) visit(out, []);
+        return paths;
+    }
+
+    function renderFiltered(source, buffer, start, duration, offset) {
+        const paths = filterPaths(source);
+        if (!paths.some((path) => path.some((node) => node instanceof BiquadFilterNode))) return null;
+        if (duration > 30) throw new RangeError("native filtered notes are limited to 30 seconds");
+        const rate = buffer.sampleRate;
+        const length = Math.max(1, Math.ceil(duration * rate));
+        const rendered = source.context.createBuffer(buffer.numberOfChannels, length, rate);
+        for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+            const input = buffer.getChannelData(channel);
+            const output = rendered.getChannelData(channel);
+            for (const path of paths) {
+                const states = new Map();
+                for (let index = 0; index < length; index++) {
+                    const position = Math.floor(offset * rate) + index;
+                    let sample = source.loop ? input[position % input.length] : input[position] || 0;
+                    const time = start + index / rate;
+                    for (const node of path) {
+                        if (node instanceof GainNode) {
+                            sample *= node.gain.__valueAt(time);
+                        } else if (node instanceof BiquadFilterNode) {
+                            const frequency = Math.max(1, Math.min(rate * 0.499, node.frequency.__valueAt(time) * Math.pow(2, node.detune.__valueAt(time) / 1200)));
+                            const omega = 2 * Math.PI * frequency / rate;
+                            const cosine = Math.cos(omega);
+                            const alpha = Math.sin(omega) / (2 * Math.max(0.001, node.Q.__valueAt(time)));
+                            let b0, b1, b2;
+                            if (node.type === "bandpass") {
+                                b0 = alpha;
+                                b1 = 0;
+                                b2 = -alpha;
+                            } else if (node.type === "highpass") {
+                                b0 = (1 + cosine) / 2;
+                                b1 = -1 - cosine;
+                                b2 = b0;
+                            } else if (node.type === "notch") {
+                                b0 = 1;
+                                b1 = -2 * cosine;
+                                b2 = 1;
+                            } else if (node.type === "lowpass") {
+                                b0 = (1 - cosine) / 2;
+                                b1 = 1 - cosine;
+                                b2 = b0;
+                            } else {
+                                throw new Error("unsupported native biquad type: " + node.type);
+                            }
+                            const state = states.get(node) || [0, 0, 0, 0];
+                            const value = (b0 * sample + b1 * state[0] + b2 * state[1] + 2 * cosine * state[2] - (1 - alpha) * state[3]) / (1 + alpha);
+                            states.set(node, [sample, state[0], value, state[2]]);
+                            sample = value;
+                        }
+                    }
+                    output[index] += sample;
+                }
+            }
+        }
+        return rendered;
+    }
+
+    class OscillatorNode extends AudioBufferSourceNode {
+        constructor(context) {
+            super(context);
+            this.type = "sine";
+            this.frequency = new AudioParam(440, this);
+        }
+
+        start(when = 0) {
+            if (this.__started) throw new Error("cannot call start more than once");
+            this.__started = true;
+            this.__stopped = false;
+            this.__offset = 0;
+            this.__startTime = Math.max(audioNow(), Number(when) || 0);
+            setTimeoutFn(() => {
+                const duration = this.__stopTime > this.__startTime ? this.__stopTime - this.__startTime : 2;
+                if (duration > 30) throw new RangeError("native oscillator notes are limited to 30 seconds");
+                this.__loop = this.__stopTime < 0;
+                const rate = this.context.sampleRate;
+                this.buffer = this.context.createBuffer(1, Math.max(1, Math.ceil(duration * rate)), rate);
+                const data = this.buffer.getChannelData(0);
+                let phase = 0;
+                for (let index = 0; index < data.length; index++) {
+                    const time = this.__startTime + index / rate;
+                    const fraction = phase % 1;
+                    if (this.type === "sine") data[index] = Math.sin(2 * Math.PI * fraction);
+                    else if (this.type === "square") data[index] = fraction < 0.5 ? 1 : -1;
+                    else if (this.type === "sawtooth") data[index] = 2 * fraction - 1;
+                    else if (this.type === "triangle") data[index] = 1 - 4 * Math.abs(fraction - 0.5);
+                    else throw new Error("unsupported native oscillator type: " + this.type);
+                    phase += Math.max(0, this.frequency.__valueAt(time)) * Math.pow(2, this.detune.__valueAt(time) / 1200) / rate;
+                }
+                this.__createVoice();
+            }, 0);
         }
     }
 
@@ -2078,6 +2227,38 @@
             super.disconnect();
             if (this.mediaElement) this.mediaElement.__syncAudio();
         }
+    }
+
+    function decodeAudio(request, start) {
+        return new Promise((resolve, reject) => {
+            pendingDecodes.set(request, { resolve, reject });
+            try {
+                start();
+            } catch (error) {
+                pendingDecodes.delete(request);
+                reject(error);
+            }
+        });
+    }
+
+    function decodeAudioBytes(bytes) {
+        if (!audioBridge || typeof audioBridge.decode !== "function") {
+            return Promise.reject(new Error("audio decoding is not available"));
+        }
+        const request = nextAudioRequest++;
+        return decodeAudio(request, () => audioBridge.decode(request, bytesView(bytes)));
+    }
+
+    function decodeAudioAsset(path) {
+        if (!audioBridge || typeof audioBridge.decodeAsset !== "function") {
+            return Promise.reject(new Error("audio decoding is not available"));
+        }
+        const request = nextAudioRequest++;
+        return decodeAudio(request, () => audioBridge.decodeAsset(request, String(path)));
+    }
+
+    function isBundleAsset(url) {
+        return Boolean(url) && !/^[a-z][a-z0-9+.-]*:/i.test(url) && native.fs.size(url) >= 0;
     }
 
     class HTMLAudioElement {
@@ -2149,9 +2330,7 @@
                 return Promise.resolve();
             }
             if (!this.__ready) {
-                this.__ready = fetchResource(this.src)
-                    .then((response) => response.arrayBuffer())
-                    .then((bytes) => this.__decode(bytes));
+                this.__ready = this.__loadSource();
             }
             return this.__ready
                 .then(() => {
@@ -2173,22 +2352,33 @@
         load() {}
 
         __decode(bytes) {
-            return new Promise((resolve, reject) => {
-                if (!audioBridge || typeof audioBridge.decode !== "function") {
-                    reject(new Error("audio decoding is not available"));
-                    return;
-                }
-                const request = nextAudioRequest++;
-                pendingDecodes.set(request, {
-                    resolve: (buffer) => {
-                        this.__buffer = buffer;
-                        this.duration = buffer.duration;
-                        resolve(buffer);
-                    },
-                    reject,
+            return this.__adoptBytes(bytes);
+        }
+
+        __adoptBytes(bytes) {
+            if (!this.__decodePromise) {
+                this.__decodePromise = decodeAudioBytes(bytes).then((buffer) => {
+                    this.__buffer = buffer;
+                    this.duration = buffer.duration;
+                    return buffer;
                 });
-                audioBridge.decode(request, bytesView(bytes));
-            });
+            }
+            return this.__decodePromise;
+        }
+
+        __loadSource() {
+            if (this.__decodePromise) return this.__decodePromise;
+            this.__decodePromise = (isBundleAsset(this.src)
+                ? decodeAudioAsset(this.src)
+                : fetchResource(this.src)
+                    .then((response) => response.arrayBuffer())
+                    .then((bytes) => decodeAudioBytes(bytes)))
+                .then((buffer) => {
+                    this.__buffer = buffer;
+                    this.duration = buffer.duration;
+                    return buffer;
+                });
+            return this.__decodePromise;
         }
 
         __createVoice() {
@@ -2255,6 +2445,307 @@
         }
     }
 
+    class HTMLVideoElement {
+        constructor(src) {
+            this.__src = src === undefined ? "" : String(src);
+            this.crossOrigin = null;
+            this.playsInline = false;
+            this.autoplay = false;
+            this.preload = "auto";
+            this.width = 0;
+            this.height = 0;
+            this.onended = null;
+            this.error = null;
+            this.paused = true;
+            this.ended = false;
+            this.duration = NaN;
+            this.videoWidth = 0;
+            this.videoHeight = 0;
+            this.__networkState = 0;
+            this.__loop = false;
+            this.__volume = 1;
+            this.__muted = false;
+            this.__playbackRate = 1;
+            this.__base = 0;
+            this.__startedAt = 0;
+            this.__nativeId = 0;
+            this.__ready = null;
+            this.__timer = 0;
+            this.__readyTimer = 0;
+            this.__dataFired = false;
+            this.__seekPending = false;
+            this.__listeners = makeListeners();
+            this.__audio = new HTMLAudioElement(this.__src);
+        }
+
+        get src() {
+            return this.__src;
+        }
+
+        get currentSrc() {
+            return this.__src;
+        }
+
+        get networkState() {
+            return this.__networkState;
+        }
+
+        get readyState() {
+            if (!this.__nativeId) return 0;
+            if (this.ended) return 2;
+            return native.video.ready(this.__nativeId, this.currentTime) ? 2 : 1;
+        }
+
+        set src(value) {
+            const url = value === undefined ? "" : String(value);
+            if (url === this.__src) return;
+            this.__src = url;
+            this.load();
+        }
+
+        get loop() {
+            return this.__loop;
+        }
+
+        set loop(value) {
+            this.__loop = Boolean(value);
+            this.__audio.loop = this.__loop;
+        }
+
+        get volume() {
+            return this.__volume;
+        }
+
+        set volume(value) {
+            this.__volume = Math.min(1, Math.max(0, Number(value) || 0));
+            this.__audio.volume = this.__volume;
+        }
+
+        get muted() {
+            return this.__muted;
+        }
+
+        set muted(value) {
+            this.__muted = Boolean(value);
+            this.__audio.muted = this.__muted;
+        }
+
+        get playbackRate() {
+            return this.__playbackRate;
+        }
+
+        set playbackRate(value) {
+            this.__playbackRate = Math.max(0, Number(value) || 0);
+            this.__audio.playbackRate = this.__playbackRate;
+        }
+
+        get currentTime() {
+            if (this.paused) return this.__base;
+            const elapsed = (audioNow() - this.__startedAt) * this.__playbackRate;
+            let time = this.__base + elapsed;
+            if (this.__loop && Number.isFinite(this.duration) && this.duration > 0) {
+                time %= this.duration;
+            } else if (Number.isFinite(this.duration) && time > this.duration) {
+                time = this.duration;
+            }
+            return time;
+        }
+
+        set currentTime(value) {
+            const time = Math.max(0, Number(value) || 0);
+            this.__base = Number.isFinite(this.duration) && this.duration > 0
+                ? Math.min(time, this.duration)
+                : time;
+            this.__startedAt = audioNow();
+            this.ended = false;
+            this.__audio.currentTime = this.__base;
+            this.__seekPending = true;
+            this.__fire("seeking");
+            this.__startReadyTimer();
+        }
+
+        play() {
+            if (!this.paused) return Promise.resolve();
+            this.paused = false;
+            this.ended = false;
+            this.__startedAt = audioNow();
+            const ready = this.__prepare();
+            ready
+                .then(() => {
+                    if (this.paused) return;
+                    this.__audio.currentTime = this.__base;
+                    this.__audio.play().catch(() => {});
+                    this.__fire("playing");
+                    this.__startTicking();
+                })
+                .catch((error) => {
+                    reportError(error);
+                    this.paused = true;
+                    this.__stopTicking();
+                    this.__fire("error");
+                });
+            return ready.then(() => {});
+        }
+
+        pause() {
+            if (this.paused) return;
+            this.__base = this.currentTime;
+            this.paused = true;
+            this.ended = false;
+            this.__stopTicking();
+            this.__audio.pause();
+        }
+
+        load() {
+            if (this.__nativeId) {
+                native.video.close(this.__nativeId);
+                this.__nativeId = 0;
+            }
+            this.__audio.pause();
+            this.__ready = null;
+            this.__base = 0;
+            this.__startedAt = 0;
+            this.paused = true;
+            this.ended = false;
+            this.duration = NaN;
+            this.videoWidth = 0;
+            this.videoHeight = 0;
+            this.error = null;
+            this.__networkState = this.__src ? 1 : 0;
+            this.__dataFired = false;
+            this.__seekPending = false;
+            this.__stopTicking();
+            this.__stopReadyTimer();
+            this.__audio = new HTMLAudioElement(this.__src);
+        }
+
+        canPlayType(type) {
+            return /mp4|m4v|avc1/i.test(String(type)) ? "probably" : "";
+        }
+
+        addEventListener(type, fn) {
+            this.__listeners.add(type, fn);
+        }
+
+        removeEventListener(type, fn) {
+            this.__listeners.remove(type, fn);
+        }
+
+        __prepare() {
+            if (this.__ready) return this.__ready;
+            if (!this.__src) {
+                this.__ready = Promise.reject(new Error("no video source"));
+                return this.__ready;
+            }
+            const url = this.__src;
+            this.__networkState = 2;
+            this.__ready = this.__open(url)
+                .then((info) => {
+                    this.__nativeId = info.id;
+                    this.videoWidth = info.width;
+                    this.videoHeight = info.height;
+                    this.duration = info.duration > 0 ? info.duration : NaN;
+                    this.__networkState = 1;
+                    this.__dataFired = false;
+                    this.__fire("loadedmetadata");
+                    this.__startReadyTimer();
+                    return info;
+                })
+                .catch((error) => {
+                    this.__networkState = 3;
+                    this.error = { code: 4, message: String((error && error.message) || error) };
+                    throw error;
+                });
+            return this.__ready;
+        }
+
+        __open(url) {
+            if (!native.video) return Promise.reject(new Error("video playback is not available"));
+            const relative = isBundleAsset(url);
+            if (relative && typeof native.video.openAsset === "function") {
+                const info = native.video.openAsset(url);
+                if (info) return Promise.resolve(info);
+            }
+            return fetchResource(url)
+                .then((response) => response.arrayBuffer())
+                .then((bytes) => {
+                    const info = native.video.open(bytesView(bytes));
+                    if (!info) throw new Error("unsupported video: " + url);
+                    this.__audio.__adoptBytes(bytes).catch(() => {});
+                    return info;
+                });
+        }
+
+        __startReadyTimer() {
+            if (this.__readyTimer) return;
+            this.__checkFrame();
+            this.__readyTimer = setIntervalFn(() => this.__checkFrame(), 100);
+        }
+
+        __stopReadyTimer() {
+            if (!this.__readyTimer) return;
+            clearTimer(this.__readyTimer);
+            this.__readyTimer = 0;
+        }
+
+        __checkFrame() {
+            if (!this.__nativeId) return;
+            if (!this.__dataFired && this.readyState >= 2) {
+                this.__dataFired = true;
+                this.__fire("loadeddata");
+                this.__fire("canplay");
+            }
+            if (this.__seekPending && this.readyState >= 2) {
+                this.__seekPending = false;
+                this.__fire("timeupdate");
+                this.__fire("seeked");
+            }
+            if (this.__dataFired && !this.__seekPending) this.__stopReadyTimer();
+        }
+
+        __startTicking() {
+            if (this.__timer) return;
+            this.__tick();
+            this.__timer = setIntervalFn(() => this.__tick(), 250);
+        }
+
+        __stopTicking() {
+            if (!this.__timer) return;
+            clearTimer(this.__timer);
+            this.__timer = 0;
+        }
+
+        __tick() {
+            if (this.paused) return;
+            this.__checkFrame();
+            this.__fire("timeupdate");
+            if (
+                !this.__loop
+                && Number.isFinite(this.duration)
+                && this.currentTime >= this.duration
+            ) {
+                this.__base = this.duration;
+                this.paused = true;
+                this.ended = true;
+                this.__stopTicking();
+                this.__audio.pause();
+                this.__fire("ended");
+            }
+        }
+
+        __fire(type) {
+            const event = makeEvent(type, {});
+            event.target = this;
+            try {
+                const handler = this["on" + type];
+                if (typeof handler === "function") handler(event);
+            } catch (error) {
+                reportError(error);
+            }
+            this.__listeners.emit(event);
+        }
+    }
+
     class AudioContext {
         constructor() {
             this.sampleRate = audioBridge && audioBridge.sampleRate ? audioBridge.sampleRate() || 48000 : 48000;
@@ -2277,6 +2768,14 @@
 
         createStereoPanner() {
             return new StereoPannerNode(this);
+        }
+
+        createOscillator() {
+            return new OscillatorNode(this);
+        }
+
+        createBiquadFilter() {
+            return new BiquadFilterNode(this);
         }
 
         createMediaElementSource(element) {
@@ -2621,6 +3120,7 @@
             this.__attributes.set(key, String(value));
             if (key === "id") this.id = String(value);
             if (key === "class") this.className = String(value);
+            if (["src", "href", "rel", "type", "name", "value"].includes(key)) this[key] = String(value);
         }
 
         getAttribute(name) {
@@ -2630,6 +3130,28 @@
 
         hasAttribute(name) {
             return this.__attributes.has(String(name));
+        }
+
+        get classList() {
+            const element = this;
+            const names = () => new Set(element.className.split(/\s+/).filter(Boolean));
+            return {
+                add(...values) {
+                    element.className = [...new Set([...names(), ...values])].join(" ");
+                },
+                remove(...values) {
+                    element.className = [...names()].filter((value) => !values.includes(value)).join(" ");
+                },
+                contains(value) {
+                    return names().has(value);
+                },
+                toggle(value, force) {
+                    const enabled = force === undefined ? !this.contains(value) : Boolean(force);
+                    if (enabled) this.add(value);
+                    else this.remove(value);
+                    return enabled;
+                },
+            };
         }
 
         removeAttribute(name) {
@@ -2642,7 +3164,7 @@
             if (current && typeof current.removeChild === "function") current.removeChild(child);
             if (child instanceof HTMLCanvasElement) {
                 child.__parent = this;
-                if (this.tagName === "BODY") mainCanvas = child;
+                if (!mainCanvas || this.tagName === "BODY") mainCanvas = child;
             } else {
                 child.parentElement = this;
             }
@@ -2937,10 +3459,14 @@
         createElement(tag) {
             const name = String(tag).toLowerCase();
             if (name === "canvas") return registerElement(new HTMLCanvasElement());
+            if (name === "video") return registerElement(new HTMLVideoElement());
+            if (name === "audio") return new HTMLAudioElement();
             if (name === "input") return registerElement(new HTMLInputElement(name));
             if (name === "textarea") return registerElement(new HTMLTextAreaElement(name));
             if (name === "form") return registerElement(new HTMLFormElement(name));
-            return registerElement(new HTMLElement(name));
+            const element = registerElement(new HTMLElement(name));
+            if (name === "link") element.relList = { supports: (value) => value === "modulepreload" };
+            return element;
         },
         createElementNS(_namespace, tag) {
             return document.createElement(tag);
@@ -2973,13 +3499,22 @@
             );
         },
         querySelector(selector) {
-            const value = String(selector);
-            if (value.startsWith("#")) return document.getElementById(value.slice(1));
-            if (value === "canvas") return mainCanvas;
-            return null;
+            return document.querySelectorAll(selector)[0] || null;
         },
-        querySelectorAll() {
-            return [];
+        querySelectorAll(selector) {
+            const value = String(selector).trim();
+            if (!value) return [];
+            const match = /^([\w-]+)?(?:#([\w-]+))?(?:\.([\w-]+))?(?:\[([\w-]+)(?:=["']?([^"'\]]+)["']?)?\])?$/.exec(value);
+            if (!match) return [];
+            const [, tag, id, className, attr, attrValue] = match;
+            return [documentElement, head, body, ...createdElements].filter((element) => {
+                if (!isAttached(element)) return false;
+                return (!tag || element.tagName.toLowerCase() === tag.toLowerCase())
+                    && (!id || element.id === id)
+                    && (!className || String(element.className).split(/\s+/).includes(className))
+                    && (!attr || (element.hasAttribute && element.hasAttribute(attr)
+                        && (attrValue === undefined || element.getAttribute(attr) === attrValue)));
+            });
         },
         exitPointerLock() {
             native.window.setCursorLocked(false);
@@ -2999,6 +3534,55 @@
             documentListeners.emit(event);
             return true;
         },
+    };
+
+    global.__kapNative_loadDocument = function (html) {
+        for (const element of [head, body]) {
+            for (const child of element.children.slice()) element.removeChild(child);
+        }
+        mainCanvas = null;
+        documentElement.children = [];
+        documentElement.append(head, body);
+        const stack = [body];
+        const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+        const source = String(html).replace(/<!--[\s\S]*?-->/g, "")
+            .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
+        const decode = (value) => value.replace(/&(?:quot|apos|amp|lt|gt);/g, (entity) => ({
+            "&quot;": '"',
+            "&apos;": "'",
+            "&amp;": "&",
+            "&lt;": "<",
+            "&gt;": ">",
+        })[entity]);
+        const tokens = /<\/?([\w-]+)\b((?:"[^"]*"|'[^']*'|[^'">])*)>|([^<]+)/g;
+        for (const token of source.matchAll(tokens)) {
+            if (!token[1]) {
+                const text = decode(token[3] || "");
+                stack[stack.length - 1].textContent += text;
+                if (stack[stack.length - 1].tagName === "TITLE") document.title = text;
+                continue;
+            }
+            const tag = token[1].toLowerCase();
+            if (token[0].startsWith("</")) {
+                const index = stack.map((element) => element.tagName.toLowerCase()).lastIndexOf(tag);
+                if (index >= 0) stack.length = Math.max(1, index);
+                continue;
+            }
+            const element = tag === "html" ? documentElement : tag === "head" ? head : tag === "body" ? body : document.createElement(tag);
+            if (!["html", "head", "body"].includes(tag)) stack[stack.length - 1].appendChild(element);
+            const attributes = /([^\s=\/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+            for (const attr of token[2].matchAll(attributes)) {
+                const name = attr[1].toLowerCase();
+                const value = decode(attr[2] ?? attr[3] ?? attr[4] ?? "");
+                if (element.setAttribute) element.setAttribute(name, value);
+                else element[name === "class" ? "className" : name] = value;
+                if (tag === "canvas" && ["width", "height"].includes(name)) element[name] = Number(value);
+            }
+            if (!voidTags.has(tag) && !token[0].endsWith("/>")) {
+                if (["html", "head", "body"].includes(tag)) stack.length = 0;
+                stack.push(element);
+            }
+        }
     };
 
     const storageData = (function () {
@@ -3063,6 +3647,17 @@
         },
         maxTouchPoints: 0,
         onLine: true,
+        mediaCapabilities: {
+            decodingInfo(config) {
+                const type = (config && config.video && config.video.contentType) || "";
+                return Promise.resolve({
+                    supported: Boolean(native.video) && /^video\/mp4/i.test(type),
+                    smooth: false,
+                    powerEfficient: false,
+                    keySystemAccess: null,
+                });
+            },
+        },
         vibrate() {
             return false;
         },
@@ -3699,6 +4294,7 @@
     });
     define("FontFace", FontFace);
     global.Audio = HTMLAudioElement;
+    global.HTMLVideoElement = HTMLVideoElement;
     define("AudioBuffer", AudioBuffer);
     define("AudioContext", AudioContext);
     define("AudioNode", AudioNode);
@@ -3706,6 +4302,8 @@
     define("GainNode", GainNode);
     define("StereoPannerNode", StereoPannerNode);
     define("AudioBufferSourceNode", AudioBufferSourceNode);
+    define("OscillatorNode", OscillatorNode);
+    define("BiquadFilterNode", BiquadFilterNode);
     define("MediaElementAudioSourceNode", MediaElementAudioSourceNode);
     global.webkitAudioContext = AudioContext;
     define("ResizeObserver", ResizeObserver);

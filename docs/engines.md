@@ -68,6 +68,16 @@ node cli/src/index.mjs run ./my-game --js-engine quickjs
 only that engine and fails at startup when asked for the other. When both are
 compiled in, the default is QuickJS.
 
+The CLI prefers the local release host when it supports `--js-engine`, then
+checks the debug host, so `cargo build --features v8` works even if an older
+QuickJS-only release build exists. `--host` and `KAPLAY_NATIVE_HOST` override
+that selection; to select the debug build explicitly:
+
+```sh
+node cli/src/index.mjs run --web-dist ./dist --js-engine v8 --host ./target/debug/kaplay-native-host
+node cli/src/index.mjs engines --host ./target/debug/kaplay-native-host
+```
+
 `kaplay-native pack --js-engine v8` embeds the choice in a distributed game, so
 a packed binary starts with V8 without any flags. It also makes the CLI use the
 V8 host flavor, which is why a default QuickJS-packed game cannot be switched

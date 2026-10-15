@@ -5,3 +5,4 @@ dist/
 *.log
 build/
 steam_appid.txt
+.DS_Store

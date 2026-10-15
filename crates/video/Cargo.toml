@@ -1,0 +1,12 @@
+[package]
+name = "kaplay-native-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusty_h264-common.workspace = true
+rusty_h264-decoder.workspace = true
+symphonia.workspace = true
+thiserror.workspace = true

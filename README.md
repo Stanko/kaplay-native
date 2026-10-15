@@ -32,10 +32,14 @@ validated against a shipping Steam depot - see [docs/steam.md](docs/steam.md)
 for the manual validation checklist.
 
 - Runtime: window, GL 2.1 compatibility context, frame loop, aspect-fit present
-- Bridge: WebGL 1, Canvas 2D, images, fonts, timers, events, `localStorage`
+- Bridge: WebGL 1, Canvas 2D, images, fonts, timers, events, `localStorage`,
+  and an `index.html` document tree
 - Network: `fetch` (HTTP/HTTPS) and `WebSocket` (ws/wss) on background threads
 - Audio: Web Audio nodes over a native software mixer, plus `HTMLAudioElement`
-  music, decoding WAV, MP3, FLAC, Ogg Vorbis, and Opus
+  music, decoding WAV, MP3, FLAC, Ogg Vorbis, and Opus; `OscillatorNode` and
+  `BiquadFilterNode` render short synthesized notes
+- Video: `HTMLVideoElement` over a threaded, pure-Rust H.264 MP4 decoder,
+  drawn with `gl.texImage2D` (the path KAPLAY's `video()` component uses)
 - Assets: directory or `.pak` archives
 - Steam: dynamic `steam_api` loading, user, achievements, stats, cloud storage
 - Engines: QuickJS by default, optional V8 backend for full modern JS and `Intl`
@@ -140,7 +144,14 @@ kaplay-native-host --dir path/to/game/dist --window 1280x720
 The entry script is evaluated as an ES module, like
 `<script type="module">` in a browser. Top-level declarations stay
 module-scoped, so they cannot collide with globals that KAPLAY or another
-library exports onto `window`.
+library exports onto `window`. Imports between chunks resolve from the same
+directory, including the relative imports Vite emits for code splitting and
+`import()` calls for lazy chunks, so a production build with multiple chunks
+runs as-is. Modules see `import.meta.url`: `kaplay-native://game/<path>` for
+bundled files and `file://` for `--script` entries. The host parses
+`index.html` into the shim document before the game runs, so
+`document.querySelector`, `classList`, and the canvas attributes in the page
+behave as they do on the web.
 
 ## Bundling from source
 

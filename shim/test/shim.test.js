@@ -780,6 +780,151 @@ test("media element sources route through the graph", async () => {
     assert.ok(Math.abs(after.args[1] - 0.25) < 1e-6);
 });
 
+test("video elements open, play, and advance their clock", async () => {
+    stub.files.set("video/intro.mp4", new Uint8Array([1, 2, 3, 4, 5, 6]));
+    const element = document.createElement("video");
+    element.src = "video/intro.mp4";
+    const events = [];
+    element.addEventListener("playing", () => events.push("playing"));
+    element.addEventListener("timeupdate", () => events.push("timeupdate"));
+    assert.equal(element.paused, true);
+
+    const playing = element.play();
+    advance(1);
+    await playing;
+
+    const opened = stub.calls.filter((call) => call.name === "video.openAsset").at(-1);
+    assert.deepEqual(opened.args, ["video/intro.mp4"]);
+    assert.equal(element.paused, false);
+    assert.equal(element.videoWidth, 160);
+    assert.equal(element.videoHeight, 120);
+    assert.equal(element.duration, 1);
+    assert.ok(events.includes("playing"));
+    assert.ok(events.includes("timeupdate"));
+
+    const before = element.currentTime;
+    advance(400);
+    assert.ok(Math.abs(element.currentTime - before - 0.4) < 1e-6);
+    element.pause();
+    assert.equal(element.paused, true);
+    const paused = element.currentTime;
+    advance(400);
+    assert.equal(element.currentTime, paused);
+    element.currentTime = 0.25;
+    assert.equal(element.currentTime, 0.25);
+    assert.ok(stub.calls.some((call) => call.name === "audio.play"));
+});
+
+test("video elements fire ended at the end of playback", async () => {
+    stub.files.set("video/end.mp4", new Uint8Array([1]));
+    const element = document.createElement("video");
+    element.src = "video/end.mp4";
+    let ended = 0;
+    element.onended = () => ended++;
+    const playing = element.play();
+    advance(1);
+    await playing;
+    advance(1500);
+    assert.equal(ended, 1);
+    assert.equal(element.ended, true);
+    assert.equal(element.paused, true);
+    assert.equal(element.currentTime, 1);
+});
+
+test("video elements play their audio through the bundle", async () => {
+    stub.files.set("video/battle.mp4", new Uint8Array([1, 2, 3, 4]));
+    const element = document.createElement("video");
+    element.src = "video/battle.mp4";
+    element.volume = 0.5;
+    const playing = element.play();
+    advance(1);
+    await playing;
+    const decode = stub.calls.filter((call) => call.name === "audio.decodeAsset").at(-1);
+    assert.equal(decode.args[1], "video/battle.mp4");
+    const play = stub.calls.filter((call) => call.name === "audio.play").at(-1);
+    assert.ok(Math.abs(play.args[2] - 0.5) < 1e-6);
+});
+
+test("video sources outside the bundle decode from fetched bytes", async () => {
+    const element = document.createElement("video");
+    element.src = "data:video/mp4;base64,AQIDBA==";
+    const playing = element.play();
+    advance(1);
+    await playing;
+    const opened = stub.calls.filter((call) => call.name === "video.open").at(-1);
+    assert.deepEqual(opened.args, [4]);
+    const decode = stub.calls.filter((call) => call.name === "audio.decode").at(-1);
+    assert.deepEqual(decode.args.slice(1), [4]);
+});
+
+test("video readiness tracks decoded frames and resolves seeks", async () => {
+    stub.files.set("video/ready.mp4", new Uint8Array([1, 2]));
+    const element = document.createElement("video");
+    element.src = "video/ready.mp4";
+    assert.equal(element.readyState, 0);
+    assert.equal(element.networkState, 1);
+    const events = [];
+    element.addEventListener("seeking", () => events.push("seeking"));
+    element.addEventListener("seeked", () => events.push("seeked"));
+    const playing = element.play();
+    advance(1);
+    await playing;
+    assert.equal(element.readyState, 2);
+    assert.equal(element.networkState, 1);
+
+    const video = stub.videos.get(element.__nativeId);
+    video.ready = false;
+    element.currentTime = 0.25;
+    assert.deepEqual(events, ["seeking"]);
+    assert.equal(element.readyState, 1);
+    video.ready = true;
+    advance(100);
+    assert.deepEqual(events, ["seeking", "seeked"]);
+    assert.equal(element.readyState, 2);
+});
+
+test("video textures upload the frame at the current time", async () => {
+    stub.files.set("video/cutscene.mp4", new Uint8Array([1, 2, 3]));
+    const element = document.createElement("video");
+    element.src = "video/cutscene.mp4";
+    const playing = element.play();
+    advance(1);
+    await playing;
+    advance(200);
+
+    const canvas = makeCanvas();
+    const gl = canvas.getContext("webgl");
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, element);
+
+    const call = stub.calls.filter((entry) => entry.name === "gl.texImage2DVideo").at(-1);
+    assert.ok(call);
+    assert.equal(call.args[4], element.__nativeId);
+    assert.ok(Math.abs(call.args[5] - element.currentTime) < 1e-6);
+});
+
+test("changing the video source closes the native handle", async () => {
+    stub.files.set("video/first.mp4", new Uint8Array([1]));
+    stub.files.set("video/second.mp4", new Uint8Array([2]));
+    const element = document.createElement("video");
+    element.src = "video/first.mp4";
+    const playing = element.play();
+    advance(1);
+    await playing;
+    const id = element.__nativeId;
+    element.src = "video/second.mp4";
+    const close = stub.calls.filter((entry) => entry.name === "video.close").at(-1);
+    assert.deepEqual(close.args, [id]);
+    assert.equal(element.__nativeId, 0);
+    assert.equal(element.videoWidth, 0);
+    assert.equal(element.paused, true);
+});
+
+test("video elements report which container they can play", () => {
+    const element = document.createElement("video");
+    assert.equal(element.canPlayType("video/mp4; codecs=\"avc1.42E01E\""), "probably");
+    assert.equal(element.canPlayType("video/webm"), "");
+});
+
 test("suspending and resuming an audio context pauses the engine", async () => {
     const context = new AudioContext();
     await context.suspend();
@@ -788,4 +933,73 @@ test("suspending and resuming an audio context pauses the engine", async () => {
     await context.resume();
     assert.equal(context.state, "running");
     assert.deepEqual(stub.calls.filter((call) => call.name === "audio.setPaused").at(-1).args, [false]);
+});
+
+test("web build HTML creates its nested canvas and startup elements", () => {
+    globalThis.__kapNative_loadDocument(`<!doctype html><html><head>
+        <title>Native &amp; Web</title><link rel="modulepreload" href="./assets/shared.js">
+        <script type="module" src="./assets/main.js">globalThis.inlineRan = true;</script>
+        <style>.game { color: red }</style>
+        </head><body class="game"><!-- <canvas id="wrong"></canvas> -->
+        <div class="viewport" id="viewport"><canvas id="game-canvas" width="480" height="270"></canvas></div>
+        </body></html>`);
+    const canvas = document.querySelector("canvas");
+    assert.ok(canvas instanceof HTMLCanvasElement);
+    assert.equal(canvas.width, 480);
+    assert.equal(canvas.height, 270);
+    assert.equal(document.getElementById("game-canvas"), canvas);
+    assert.equal(canvas.parentElement, document.querySelector(".viewport"));
+    assert.equal(canvas.parentElement.parentElement, document.body);
+    assert.equal(document.title, "Native & Web");
+    assert.equal(document.getElementById("wrong"), null);
+    assert.equal(globalThis.inlineRan, undefined);
+    const links = document.querySelectorAll('link[rel="modulepreload"]');
+    assert.equal(links.length, 1);
+    assert.equal(links[0].href, "./assets/shared.js");
+    assert.equal(document.createElement("link").relList.supports("modulepreload"), true);
+    document.body.classList.add("hide-cursor");
+    assert.equal(document.body.classList.contains("game"), true);
+    assert.equal(document.body.classList.toggle("hide-cursor"), false);
+    globalThis.__kapNative_loadDocument("<body><canvas id='replacement'></canvas></body>");
+    assert.equal(document.getElementById("game-canvas"), null);
+    assert.equal(document.querySelector("canvas").id, "replacement");
+});
+
+test("media capability checks report video container support", async () => {
+    const mp4 = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: "video/mp4" } });
+    assert.equal(mp4.supported, true);
+    assert.equal(mp4.smooth, false);
+    const webm = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: "video/webm" } });
+    assert.equal(webm.supported, false);
+});
+
+test("scheduled oscillators and biquads produce filtered PCM and free it on end", () => {
+    const context = new AudioContext();
+    function note(frequency) {
+        const oscillator = context.createOscillator();
+        oscillator.frequency.setValueAtTime(frequency, context.currentTime);
+        const filter = context.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.value = 1000;
+        filter.Q.value = 5;
+        const gain = context.createGain();
+        gain.gain.setValueAtTime(0.1, context.currentTime);
+        gain.gain.linearRampToValueAtTime(0, context.currentTime + 0.03);
+        oscillator.connect(filter).connect(gain).connect(context.destination);
+        oscillator.start(context.currentTime);
+        oscillator.stop(context.currentTime + 0.03);
+        advance(0);
+        const play = stub.calls.findLast((call) => call.name === "audio.play");
+        const buffer = stub.audio.buffers.get(play.args[1]);
+        assert.ok(buffer.data.every(Number.isFinite));
+        assert.ok(buffer.frames >= 1439 && buffer.frames <= 1441);
+        const energy = buffer.data.reduce((sum, sample) => sum + sample * sample, 0);
+        stub.audio.end(play.args[0]);
+        assert.equal(stub.audio.buffers.has(play.args[1]), false);
+        return energy;
+    }
+    const pass = note(1000);
+    const rejected = note(8000);
+    assert.ok(pass > 0.01);
+    assert.ok(rejected < pass / 10, `${pass} vs ${rejected}`);
 });
