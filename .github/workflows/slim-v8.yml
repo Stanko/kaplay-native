@@ -2,6 +2,9 @@ name: Slim V8
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/slim-v8.yml
 
 permissions:
   contents: write
