@@ -116,12 +116,16 @@ enabled, and the published crate prunes the generator script, so it cannot be
 built from the crate source at all. Disabling Maglev would save ~2.3 MB more
 but removes the mid-tier JIT that keeps V8 attractive.
 
-The script currently supports Linux hosts only, caches gn and LLVM (libclang
-21+ is required by bindgen) in `~/.cache/kaplay-native`, and applies the same
-ICF link flags when `ld.lld` is available (including rustup's toolchain copy).
-macOS and Windows need the same from-source build; until a workflow publishes
-slim `librusty_v8` archives per platform, the shipped `-v8` host keeps the
-prebuilt archive with `Intl` and WebAssembly. Any host can link against a
+The script supports Linux hosts, caches gn and LLVM (libclang 21+ is required
+by bindgen) in `~/.cache/kaplay-native`, and applies the same ICF link flags
+when `ld.lld` is available (including rustup's toolchain copy). The `Slim V8`
+workflow runs it on GitHub for Linux x64 and arm64, smoke-tests the host
+against QuickJS, and publishes `librusty_v8_slim_<version>_<target>.a` on a
+`slim-v8-<version>` release. `release.yml` downloads that asset for Linux and
+links the `-v8` hosts against it with `RUSTY_V8_ARCHIVE` (the prebuilt bindings
+are compatible), falling back to the prebuilt archive when the release is
+missing. macOS and Windows keep the prebuilt archive, and with it `Intl`,
+`WebAssembly` and `Temporal`, until their archives exist. Any host can link a
 local slim archive with `RUSTY_V8_ARCHIVE=path/to/librusty_v8.a`.
 
 Remaining bundle-size candidates:

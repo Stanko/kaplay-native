@@ -30,8 +30,10 @@ Overrides: `--host <path>`, `KAPLAY_NATIVE_HOST`, and `KAPLAY_NATIVE_CACHE`.
 
 Each release ships two host flavors per platform: the default QuickJS binary
 (`kaplay-native-host-<platform>`) and the V8 binary
-(`kaplay-native-host-<platform>-v8`, ~64 MB larger). The CLI downloads the
-default one unless the command asks for V8 with `--js-engine v8`, so a game
+(`kaplay-native-host-<platform>-v8`). On Linux the V8 host links against the
+slim archive published by the `Slim V8` workflow and adds ~20 MB; other
+platforms currently use the prebuilt archive and add ~40 MB. The CLI downloads
+the default one unless the command asks for V8 with `--js-engine v8`, so a game
 built for the default engine never carries the V8 runtime.
 
 ## Pack a game

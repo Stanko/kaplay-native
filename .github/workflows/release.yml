@@ -101,6 +101,21 @@ jobs:
       - name: Stage the quickjs host
         shell: bash
         run: cp "target/${{ matrix.target }}/release/kaplay-native-host${{ matrix.ext }}" "${{ matrix.asset }}"
+      - name: Use the slim V8 archive when published
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^name = "v8"$/{n;s/^version = "\(.*\)"$/\1/p;q}' Cargo.lock)
+          asset=librusty_v8_slim_${version}_${{ matrix.target }}.a
+          if gh release download "slim-v8-$version" -p "$asset" -D "$RUNNER_TEMP/slim-v8" --clobber 2>/dev/null; then
+            echo "RUSTY_V8_ARCHIVE=$RUNNER_TEMP/slim-v8/$asset" >> "$GITHUB_ENV"
+            echo "The v8 host uses the slim $version archive" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No slim V8 archive for $version; the v8 host uses the prebuilt archive" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Build the v8 host
         run: cargo build --release --target ${{ matrix.target }} -p kaplay-native-host --no-default-features --features v8
         env:
