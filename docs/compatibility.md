@@ -37,6 +37,10 @@ missing.
 ## DOM and events
 
 - `document`, `document.head`, `document.body`, `document.documentElement`
+- `index.html` is parsed into `document` before the game runs: elements,
+  attributes, `class`, `id`, `title`, `classList`, and
+  `querySelector`/`querySelectorAll` for `tag`, `#id`, `.class`, and `[attr]`
+  selectors. Inline scripts and CSS are not executed.
 - `createElement`, `createTextNode`, `getElementById`, `getElementsByTagName`,
   `getElementsByClassName`, `querySelector`, `appendChild`, `prepend`,
   `removeChild`, `insertBefore`, `setAttribute` for `div`, `input`, `textarea`,
@@ -121,11 +125,17 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
 - `localStorage` is persisted as JSON in the platform data directory
   (`--save-dir` overrides it) and written atomically.
 - `AudioContext`, `AudioBuffer`, `AudioBufferSourceNode`, `GainNode`,
-  `StereoPannerNode`, `MediaElementAudioSourceNode`, and `AudioParam` cover the
+  `StereoPannerNode`, `OscillatorNode`, `BiquadFilterNode`,
+  `MediaElementAudioSourceNode`, and `AudioParam` cover the
   Web Audio surface KAPLAY uses. `start(when, offset, duration)`, `stop`,
   `loop`, `playbackRate`, `detune`, `pan`, `gain` (including
   `setValueAtTime`/`linearRampToValueAtTime`/`exponentialRampToValueAtTime`),
   `connect`/`disconnect`, and `onended` all work.
+- `OscillatorNode` (sine, square, sawtooth, triangle) and `BiquadFilterNode`
+  (lowpass, highpass, bandpass, notch) render a note to PCM when playback
+  starts, with frequency, detune, Q, and gain automation evaluated over the
+  note. Rendered notes are limited to 30 seconds, and filter changes after
+  playback starts are not applied to that note.
 - `HTMLAudioElement` (`new Audio(url)`) plays music through the same mixer:
   `play`, `pause`, `currentTime`, `duration`, `volume`, `playbackRate`, `loop`,
   and `onended`.
@@ -142,12 +152,13 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
   internalformat, format, type, video)`, which is the path KAPLAY's `video()`
   component uses. An audio track plays through the same mixer as
   `HTMLAudioElement`; a silent file plays without one. WebM, VP8/VP9, and AV1
-  are not supported.
+  are not supported, and `canPlayType` and
+  `navigator.mediaCapabilities.decodingInfo` report MP4 support only.
 - Decoding supports WAV, MP3, FLAC, Ogg Vorbis, Opus, and the AAC track of an
   MP4, from bundled files, data URLs, and HTTP(S) URLs.
-- `AudioWorklet`, `AnalyserNode`, `BiquadFilterNode`, `OscillatorNode`, and
-  `AudioContext.createMediaStreamSource` are not implemented. Without an audio
-  device the engine runs silently and playback still advances in real time.
+- `AudioWorklet`, `AnalyserNode`, and `AudioContext.createMediaStreamSource`
+  are not implemented. Without an audio device the engine runs silently and
+  playback still advances in real time.
 - `navigator.getGamepads()` returns an empty list.
 
 ## Platforms

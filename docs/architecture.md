@@ -22,18 +22,20 @@ evaluates the game and the KAPLAY bundle unmodified.
 
 ## Boot
 
-Startup runs in four steps:
+Startup runs in five steps:
 
 1. The host installs `__kapNative` and evaluates the shim as a classic script.
-2. `--preload` files (the KAPLAY bundle, for example) are evaluated as classic
+2. `index.html`, when present, is parsed into the shim document, so the game
+   sees the page's `head`, `body`, canvas, attributes, and title.
+3. `--preload` files (the KAPLAY bundle, for example) are evaluated as classic
    scripts, so libraries that export globals keep working. A preload that does
    not parse as a classic script is evaluated as an ES module instead, and its
    named exports are copied onto the global object, so ESM-only bundles still
    provide globals.
-3. The entry is resolved: `--script` if given, otherwise the module script
+4. The entry is resolved: `--script` if given, otherwise the module script
    referenced by `index.html` in the asset root, otherwise the first of
    `main.js`, `game/main.js`, `index.js` that exists.
-4. The entry is evaluated as an ES module, matching
+5. The entry is evaluated as an ES module, matching
    `<script type="module">` in a browser. Top-level declarations stay
    module-scoped, which prevents game functions from colliding with the
    globals KAPLAY exports onto `window` (`UP`, `LEFT`, `RED`, and so on).
@@ -97,7 +99,8 @@ only those. The engine-specific notes follow:
 5. KAPLAY renders into its own framebuffer and finally blits it to the
    "default" framebuffer.
 6. The host presents that framebuffer to the window, aspect-fit with black
-   bars, then swaps buffers.
+   bars, and swaps buffers while the window framebuffer is still bound, which
+   macOS's `flushBuffer` requires.
 
 Neither engine pumps jobs automatically in the host's frame loop model, so
 after every evaluation and frame the host drains pending work: QuickJS runs
@@ -157,6 +160,12 @@ Music takes the `HTMLAudioElement` path: the shim fetches the file through the
 normal asset resolution, decodes it through the same native pipeline, and
 represents playback as a single looping or one-shot voice. `playMusic`'s
 `connect`/`disconnect` calls re-evaluate the graph gain on the fly.
+
+Oscillators and biquad filters render their note to PCM in the shim before the
+voice starts: a deferred task builds the waveform and runs the RBJ biquad
+recurrence over it, then the buffer goes through the same upload and play path.
+The native mixer consumes buffers rather than live graphs, so notes are capped
+at 30 seconds.
 
 Video takes a parallel path. `kaplay-native-video` demuxes an MP4 with
 `symphonia`'s ISO-MP4 reader and decodes the H.264 track with

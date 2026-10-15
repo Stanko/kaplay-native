@@ -934,3 +934,72 @@ test("suspending and resuming an audio context pauses the engine", async () => {
     assert.equal(context.state, "running");
     assert.deepEqual(stub.calls.filter((call) => call.name === "audio.setPaused").at(-1).args, [false]);
 });
+
+test("web build HTML creates its nested canvas and startup elements", () => {
+    globalThis.__kapNative_loadDocument(`<!doctype html><html><head>
+        <title>Native &amp; Web</title><link rel="modulepreload" href="./assets/shared.js">
+        <script type="module" src="./assets/main.js">globalThis.inlineRan = true;</script>
+        <style>.game { color: red }</style>
+        </head><body class="game"><!-- <canvas id="wrong"></canvas> -->
+        <div class="viewport" id="viewport"><canvas id="game-canvas" width="480" height="270"></canvas></div>
+        </body></html>`);
+    const canvas = document.querySelector("canvas");
+    assert.ok(canvas instanceof HTMLCanvasElement);
+    assert.equal(canvas.width, 480);
+    assert.equal(canvas.height, 270);
+    assert.equal(document.getElementById("game-canvas"), canvas);
+    assert.equal(canvas.parentElement, document.querySelector(".viewport"));
+    assert.equal(canvas.parentElement.parentElement, document.body);
+    assert.equal(document.title, "Native & Web");
+    assert.equal(document.getElementById("wrong"), null);
+    assert.equal(globalThis.inlineRan, undefined);
+    const links = document.querySelectorAll('link[rel="modulepreload"]');
+    assert.equal(links.length, 1);
+    assert.equal(links[0].href, "./assets/shared.js");
+    assert.equal(document.createElement("link").relList.supports("modulepreload"), true);
+    document.body.classList.add("hide-cursor");
+    assert.equal(document.body.classList.contains("game"), true);
+    assert.equal(document.body.classList.toggle("hide-cursor"), false);
+    globalThis.__kapNative_loadDocument("<body><canvas id='replacement'></canvas></body>");
+    assert.equal(document.getElementById("game-canvas"), null);
+    assert.equal(document.querySelector("canvas").id, "replacement");
+});
+
+test("media capability checks report video container support", async () => {
+    const mp4 = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: "video/mp4" } });
+    assert.equal(mp4.supported, true);
+    assert.equal(mp4.smooth, false);
+    const webm = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: "video/webm" } });
+    assert.equal(webm.supported, false);
+});
+
+test("scheduled oscillators and biquads produce filtered PCM and free it on end", () => {
+    const context = new AudioContext();
+    function note(frequency) {
+        const oscillator = context.createOscillator();
+        oscillator.frequency.setValueAtTime(frequency, context.currentTime);
+        const filter = context.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.value = 1000;
+        filter.Q.value = 5;
+        const gain = context.createGain();
+        gain.gain.setValueAtTime(0.1, context.currentTime);
+        gain.gain.linearRampToValueAtTime(0, context.currentTime + 0.03);
+        oscillator.connect(filter).connect(gain).connect(context.destination);
+        oscillator.start(context.currentTime);
+        oscillator.stop(context.currentTime + 0.03);
+        advance(0);
+        const play = stub.calls.findLast((call) => call.name === "audio.play");
+        const buffer = stub.audio.buffers.get(play.args[1]);
+        assert.ok(buffer.data.every(Number.isFinite));
+        assert.ok(buffer.frames >= 1439 && buffer.frames <= 1441);
+        const energy = buffer.data.reduce((sum, sample) => sum + sample * sample, 0);
+        stub.audio.end(play.args[0]);
+        assert.equal(stub.audio.buffers.has(play.args[1]), false);
+        return energy;
+    }
+    const pass = note(1000);
+    const rejected = note(8000);
+    assert.ok(pass > 0.01);
+    assert.ok(rejected < pass / 10, `${pass} vs ${rejected}`);
+});

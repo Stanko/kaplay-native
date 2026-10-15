@@ -15,7 +15,7 @@ use kaplay_native_audio::{Audio, AudioEvent};
 use kaplay_native_canvas2d::Canvas2d;
 use kaplay_native_gfx::GlState;
 use kaplay_native_net::{Network, NetworkEvent};
-use kaplay_native_pak::AssetSource;
+use kaplay_native_pak::{normalize, AssetSource};
 use kaplay_native_steam::SteamApi;
 use serde_json::json;
 use winit::application::ApplicationHandler;
@@ -330,11 +330,7 @@ fn find_module_entry(html: &str) -> Option<String> {
         .iter()
         .find(|(module, _)| *module)
         .or_else(|| candidates.first())?;
-    let path = src.trim_start_matches('/');
-    if path.is_empty() {
-        return None;
-    }
-    Some(path.to_string())
+    normalize(src).filter(|path| !path.is_empty())
 }
 
 fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
@@ -578,6 +574,16 @@ impl HostApp {
         }
 
         let preloads = self.config.preload.clone();
+        let html = ["index.html", "public/index.html"]
+            .iter()
+            .find_map(|path| state.assets.read_text(path));
+        if let Some(html) = &html {
+            if let Err(error) = js.call_global("__kapNative_loadDocument", &[JsArg::Str(html)]) {
+                log::error!("document error: {error}");
+                event_loop.exit();
+                return None;
+            }
+        }
         let entry_source = if let Some(script) = &self.config.script {
             std::fs::read_to_string(script).ok().map(|source| {
                 let name = script
@@ -588,38 +594,49 @@ impl HostApp {
                 (name, source)
             })
         } else {
-            let from_html = ["index.html", "public/index.html"]
-                .iter()
-                .find_map(|path| state.assets.read_text(path))
-                .and_then(|html| find_module_entry(&html))
-                .and_then(|path| state.assets.read_text(&path).map(|source| (path, source)));
-            from_html.or_else(|| {
-                ["main.js", "game/main.js", "index.js"]
-                    .iter()
-                    .find_map(|path| {
-                        state
-                            .assets
-                            .read_text(path)
-                            .map(|source| ((*path).to_string(), source))
-                    })
-            })
+            html.as_ref()
+                .and_then(|html| find_module_entry(html))
+                .and_then(|path| state.assets.read_text(&path).map(|source| (path, source)))
+                .or_else(|| {
+                    ["main.js", "game/main.js", "index.js"]
+                        .iter()
+                        .find_map(|path| {
+                            state
+                                .assets
+                                .read_text(path)
+                                .map(|source| ((*path).to_string(), source))
+                        })
+                })
         };
         let mut preload_sources: Vec<String> = Vec::new();
         for preload in &preloads {
             match std::fs::read_to_string(preload) {
                 Ok(source) => preload_sources.push(source),
-                Err(error) => log::error!("failed to read preload {}: {error}", preload.display()),
+                Err(error) => {
+                    log::error!("failed to read preload {}: {error}", preload.display());
+                    event_loop.exit();
+                    return None;
+                }
             }
         }
         for source in preload_sources {
             if let Err(error) = js.eval_preload(&source) {
                 log::error!("preload error: {error}");
+                event_loop.exit();
+                return None;
             }
         }
-        if let Some((name, source)) = entry_source {
-            if let Err(error) = js.eval_module(&name, &source) {
-                log::error!("script error: {error}");
-            }
+        let Some((name, source)) = entry_source else {
+            log::error!(
+                "game entry script not found; provide --script or a directory containing index.html or main.js"
+            );
+            event_loop.exit();
+            return None;
+        };
+        if let Err(error) = js.eval_module(&name, &source) {
+            log::error!("script error: {error}");
+            event_loop.exit();
+            return None;
         }
 
         let initial_size = window.inner_size();
@@ -879,6 +896,22 @@ mod tests {
                 r#"<html><body><div id="root"></div><script type="module" crossorigin src="/assets/index-LX8yxwYF.js"></script></body></html>"#
             ),
             Some("assets/index-LX8yxwYF.js".to_string())
+        );
+    }
+
+    #[test]
+    fn normalizes_module_entry_paths() {
+        assert_eq!(
+            find_module_entry(r#"<script type="module" src="./assets/index.js?v=1"></script>"#),
+            Some("assets/index.js".to_string())
+        );
+        assert_eq!(
+            find_module_entry(r#"<script type="module" src="assets\\index.js"></script>"#),
+            Some("assets/index.js".to_string())
+        );
+        assert_eq!(
+            find_module_entry(r#"<script type="module" src="/"></script>"#),
+            None
         );
     }
 
