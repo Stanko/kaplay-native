@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-audio"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "cpal",
  "libloading",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-canvas2d"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "fontdb",
  "thiserror 2.0.21",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-gfx"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "glow",
  "log",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-host"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-net"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "log",
  "rustls",
@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-pak"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "thiserror 2.0.21",
  "zip",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-steam"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "libloading",
  "log",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "kaplay-native-video"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "rusty_h264-common",
  "rusty_h264-decoder",
