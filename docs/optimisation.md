@@ -12,13 +12,14 @@ binary, so every QuickJS game paid for it. Release now ships an engine-specific
 host per platform and the CLI downloads the matching flavor (`-v8` for
 `--js-engine v8`).
 
-| Host | Before | Engine split | Link-time folding |
-| --- | --- | --- | --- |
-| QuickJS (default) | 13.8 MB | 11.8 MB | 10.6 MB |
-| V8 | 60.1 MB | 58.1 MB | 51.8 MB |
-| QuickJS + V8 (old single artifact) | 61.7 MB | n/a | n/a |
+| Host | Before | Engine split | Link-time folding | Slim V8 |
+| --- | --- | --- | --- | --- |
+| QuickJS (default) | 13.8 MB | 11.8 MB | 10.6 MB | n/a |
+| V8 | 60.1 MB | 58.1 MB | 51.8 MB | 30.4 MB |
+| QuickJS + V8 (old single artifact) | 61.7 MB | n/a | n/a | n/a |
 
-Link-time folding is `panic = "abort"` plus LLD's `--icf=all`; see below.
+Link-time folding is `panic = "abort"` plus LLD's `--icf=all`; the slim V8
+build drops i18n, WebAssembly and Temporal. Both are described below.
 
 What the 11.8 MB QuickJS binary spends its text section on, according to
 `cargo bloat`:
@@ -97,21 +98,31 @@ and read-only data go:
 
 The single biggest removable piece is not code: `icudtl_dat.o` embeds 10.4 MB
 of ICU locale data. QuickJS has no `Intl`, so dropping i18n at build time also
-improves cross-engine parity. A from-source V8 built with
+improves cross-engine parity. `scripts/build-slim-v8.sh` builds V8 from the
+vendored sources with
 
 ```sh
-V8_FROM_SOURCE=1 GN_ARGS="v8_enable_i18n_support=false v8_enable_webassembly=false"
+V8_FROM_SOURCE=1 GN_ARGS="v8_enable_i18n_support=false v8_enable_webassembly=false v8_enable_temporal_support=false"
 ```
 
-would delete the ICU data (~10.4 MB), the WebAssembly tiers (~2.2 MB after
-ICF) and the remaining ICU code (~0.3 MB), landing the V8 host near 39 MB.
-Disabling Maglev would save ~2.3 MB more but removes the mid-tier JIT that
-keeps V8 attractive. The obstacle is infrastructure, not feasibility: the
-crate only ships V8's own sources, so a source build needs a full depot_tools
-checkout (abseil, zlib, Chromium build config) and a 30–60 minute build per
-platform. The practical route is a separate workflow that publishes slim
-`librusty_v8` archives per platform once per V8 version, then points the host
-build at them with `RUSTY_V8_ARCHIVE` or `RUSTY_V8_MIRROR`.
+and produces a 30.4 MB host (23.6 MB `.text`, 2.9 MB `.rodata`): 21.4 MB less
+than the ICF build of the prebuilt archive and 28 MB less than the original.
+`typeof Intl`, `typeof WebAssembly` and `typeof Temporal` now return
+`undefined` on both engines, and `(123456.789).toLocaleString()` matches
+QuickJS. Smoke frames are byte-identical, the bridge example logs the same
+output, and the Frax game runs on V8 15.2.124.1-rusty. Temporal is dropped
+because V8 bakes an ICU `zoneinfo64` blob into the build whenever it is
+enabled, and the published crate prunes the generator script, so it cannot be
+built from the crate source at all. Disabling Maglev would save ~2.3 MB more
+but removes the mid-tier JIT that keeps V8 attractive.
+
+The script currently supports Linux hosts only, caches gn and LLVM (libclang
+21+ is required by bindgen) in `~/.cache/kaplay-native`, and applies the same
+ICF link flags when `ld.lld` is available (including rustup's toolchain copy).
+macOS and Windows need the same from-source build; until a workflow publishes
+slim `librusty_v8` archives per platform, the shipped `-v8` host keeps the
+prebuilt archive with `Intl` and WebAssembly. Any host can link against a
+local slim archive with `RUSTY_V8_ARCHIVE=path/to/librusty_v8.a`.
 
 Remaining bundle-size candidates:
 

@@ -39,6 +39,12 @@ x64 and arm64. To build V8 from source instead, set `V8_FROM_SOURCE=1` before
 `cargo build` (slow, requires a full toolchain and network access to fetch the
 V8 checkout).
 
+`scripts/build-slim-v8.sh` builds V8 from source without `Intl`,
+`WebAssembly` and `Temporal`, which matches QuickJS's feature set and shrinks
+the Linux x64 host from 51.8 MB to 30.4 MB. The script is Linux-only for now;
+see [optimisation.md](optimisation.md#inside-v8) for measurements and
+[distribution.md](distribution.md) for how packed games choose a host.
+
 At least one engine feature must be enabled; a build with neither fails with
 `enable at least one of the quickjs or v8 features`.
 
@@ -72,9 +78,12 @@ to V8 with a runtime flag; see [distribution.md](distribution.md).
 The bridge and the shim are engine-independent, so games behave the same on
 both. The engines differ in the JavaScript language services they provide:
 
-- `Intl` is available on V8 and absent on QuickJS. KAPLAY's `runes.ts` falls
-  back to a code-point splitter on QuickJS, so text still works without
-  locale-aware segmentation.
+- `Intl` is available on the prebuilt V8 and absent on QuickJS and on slim V8
+  builds. KAPLAY's `runes.ts` falls back to a code-point splitter on QuickJS,
+  so text still works without locale-aware segmentation.
+- The prebuilt V8 also has `WebAssembly` and `Temporal`; QuickJS and slim V8
+  builds do not, so games that ship `.wasm` or use `Temporal` need the prebuilt
+  archive.
 - Error messages and stack traces come from different implementations. Code
   should not parse them.
 - QuickJS exposes a pending-job count, so the host can warn when a frame
