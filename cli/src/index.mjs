@@ -160,9 +160,8 @@ async function findHost(explicit, engine) {
         join(repoRoot, "target", "debug", hostName),
     ].filter(Boolean);
     for (const candidate of candidates) {
-        if (candidate.includes("/") || candidate.includes("\\")) {
-            if (existsSync(candidate)) return candidate;
-        } else if (which(candidate)) {
+        if (existsSync(candidate) && statSync(candidate).isFile()) return resolve(candidate);
+        if (!candidate.includes("/") && !candidate.includes("\\") && which(candidate)) {
             return candidate;
         }
     }
