@@ -159,7 +159,8 @@ binds "null" framebuffers constantly, reads pixels from them, and draws its
 own framebuffer into them, so the model has to match browser behavior.
 
 `present()` draws that offscreen framebuffer to the window with a fullscreen
-quad and preserves the state a browser would preserve:
+quad, invokes the host's swap callback while the window framebuffer is still
+bound (required by macOS), then restores the state a browser would preserve:
 
 - the clear color
 - the viewport

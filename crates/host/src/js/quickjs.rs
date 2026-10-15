@@ -3,7 +3,9 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use kaplay_native_pak::AssetSource;
 use rquickjs::function::Args;
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Function, Runtime};
 
 use super::{JsArg, Watchdog};
@@ -20,6 +22,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(state: Rc<HostState>, shim: &str, watchdog: Arc<Watchdog>) -> Result<Self, String> {
         let runtime = Runtime::new().map_err(|error| error.to_string())?;
+        runtime.set_loader(AssetResolver, AssetLoader(state.assets.clone()));
         install_watchdog(&runtime, watchdog);
         install_rejection_tracker(&runtime);
         let context = Context::full(&runtime).map_err(|error| error.to_string())?;
@@ -78,6 +81,42 @@ impl Engine {
                 .apply::<()>(&function)
                 .map_err(|error| js_error(&ctx, error))
         })
+    }
+}
+
+struct AssetResolver;
+
+impl Resolver for AssetResolver {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &rquickjs::Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        super::modules::resolve(base, name)
+            .map_err(|message| rquickjs::Error::new_resolving_message(base, name, message))
+    }
+}
+
+struct AssetLoader(Rc<AssetSource>);
+
+impl Loader for AssetLoader {
+    fn load<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<rquickjs::Module<'js>> {
+        let source = self
+            .0
+            .read_text(name)
+            .ok_or_else(|| rquickjs::Error::new_loading_message(name, "asset not found"))?;
+        let module = rquickjs::Module::declare(ctx.clone(), name, source)?;
+        module
+            .meta()?
+            .set("url", format!("{}{name}", super::modules::MODULE_ORIGIN))?;
+        Ok(module)
     }
 }
 
@@ -196,8 +235,15 @@ fn evaluate_module(context: &Context, name: &str, source: &str) -> Result<(), St
         let module =
             rquickjs::Module::declare(ctx.clone(), name.to_string(), source.as_bytes().to_vec())
                 .map_err(|error| js_error(&ctx, error))?;
-        module.eval().map_err(|error| js_error(&ctx, error))?;
+        module
+            .meta()
+            .and_then(|meta| meta.set("url", format!("{}{name}", super::modules::MODULE_ORIGIN)))
+            .map_err(|error| js_error(&ctx, error))?;
+        let (_, promise) = module.eval().map_err(|error| js_error(&ctx, error))?;
         run_pending_jobs(&ctx);
+        if let Some(result) = promise.result::<()>() {
+            result.map_err(|error| js_error(&ctx, error))?;
+        }
         Ok(())
     })
 }
@@ -374,5 +420,24 @@ mod tests {
             let runs: i32 = ctx.eval("globalThis.preloadRuns").unwrap();
             assert_eq!(runs, 1);
         });
+    }
+
+    #[test]
+    fn web_build_imports_and_startup_errors_are_supported() {
+        let runtime = Runtime::new().unwrap();
+        runtime.set_loader(super::AssetResolver, super::AssetLoader(crate::js::modules::test_assets(&[
+            ("assets/shared.js", "globalThis.loads = (globalThis.loads ?? 0) + 1; export const value = 42; export const url = import.meta.url;"),
+        ])));
+        let context = Context::full(&runtime).unwrap();
+        evaluate_module(&context, "assets/main.js", "import { value, url } from './shared.js'; const again = await import('./shared.js'); globalThis.result = [value, again.value, loads, url].join('|');").unwrap();
+        context.with(|ctx| {
+            assert_eq!(
+                ctx.eval::<String, _>("result").unwrap(),
+                "42|42|1|kaplay-native://game/assets/shared.js"
+            )
+        });
+        let error =
+            evaluate_module(&context, "bad.js", "throw new Error('startup failed');").unwrap_err();
+        assert!(error.contains("startup failed"), "{error}");
     }
 }

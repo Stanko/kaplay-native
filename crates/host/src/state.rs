@@ -29,6 +29,7 @@ pub struct HostState {
     pub canvas: Rc<RefCell<Canvas2d>>,
     pub images: RefCell<HashMap<u32, ImageData>>,
     pub next_image: Cell<u32>,
+    pub videos: RefCell<crate::video::Videos>,
     pub assets: Rc<AssetSource>,
     pub window: Arc<Window>,
     pub quit: Cell<bool>,
@@ -50,6 +51,48 @@ pub struct HostState {
 }
 
 impl HostState {
+    pub fn load_video(&self, path: &str) -> Result<crate::video::VideoInfo, String> {
+        let bytes = self
+            .assets
+            .read(path)
+            .ok_or_else(|| format!("video asset not found: {path}"))?;
+        let clip = self.videos.borrow_mut().load(path, &bytes)?;
+        let id = self.store_image(clip.width, clip.height, clip.frame(0.0).1.to_vec());
+        let info = crate::video::VideoInfo {
+            id,
+            width: clip.width,
+            height: clip.height,
+            duration: clip.duration,
+        };
+        self.videos
+            .borrow_mut()
+            .instances
+            .insert(id, crate::video::Instance { clip, frame: 0 });
+        Ok(info)
+    }
+
+    pub fn video_frame(&self, id: u32, time: f64) -> bool {
+        let mut videos = self.videos.borrow_mut();
+        let Some(instance) = videos.instances.get_mut(&id) else {
+            return false;
+        };
+        let (frame, pixels) = instance.clip.frame(time);
+        if frame != instance.frame {
+            let mut images = self.images.borrow_mut();
+            let Some(image) = images.get_mut(&id) else {
+                return false;
+            };
+            image.pixels.copy_from_slice(pixels);
+            instance.frame = frame;
+        }
+        true
+    }
+
+    pub fn release_video(&self, id: u32) {
+        self.videos.borrow_mut().instances.remove(&id);
+        self.images.borrow_mut().remove(&id);
+    }
+
     pub fn now_ms(&self) -> f64 {
         self.start.elapsed().as_secs_f64() * 1000.0
     }

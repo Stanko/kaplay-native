@@ -58,6 +58,16 @@ target/release/kaplay-native-host --script examples/smoke/main.js --dir examples
 node cli/src/index.mjs run ./my-game --js-engine quickjs
 ```
 
+The CLI prefers the local release host when it supports `--js-engine`, then
+checks the debug host. This lets `cargo build --features v8` work even if an
+older QuickJS-only release build exists. `--host` and `KAPLAY_NATIVE_HOST`
+override this selection; to select the debug build explicitly:
+
+```sh
+node cli/src/index.mjs run --web-dist ./dist --js-engine v8 --host ./target/debug/kaplay-native-host
+node cli/src/index.mjs engines --host ./target/debug/kaplay-native-host
+```
+
 `--js-engine` must name a compiled-in engine; a single-engine build accepts
 only that engine and fails at startup when asked for the other. When both are
 compiled in, the default is QuickJS.

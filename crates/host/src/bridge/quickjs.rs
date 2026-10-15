@@ -35,6 +35,7 @@ pub fn install<'js>(ctx: &Ctx<'js>, state: Rc<HostState>, shim: &str) -> rquickj
     install_fs(ctx, &native, &state)?;
     install_storage(ctx, &native, &state)?;
     install_image(ctx, &native, &state)?;
+    install_video(ctx, &native, &state)?;
     install_font(ctx, &native, &state)?;
     install_canvas(ctx, &native, &state)?;
     install_gl(ctx, &native, &state)?;
@@ -241,6 +242,47 @@ fn install_storage<'js>(
         )?;
     }
     native.set("storage", object)?;
+    Ok(())
+}
+
+fn install_video<'js>(
+    ctx: &Ctx<'js>,
+    native: &Object<'js>,
+    state: &Rc<HostState>,
+) -> rquickjs::Result<()> {
+    let object = Object::new(ctx.clone())?;
+    object.set("available", crate::video::available())?;
+    {
+        let state = state.clone();
+        object.set(
+            "load",
+            Function::new(ctx.clone(), move |path: String| -> String {
+                match state.load_video(&path) {
+                    Ok(info) => serde_json::to_string(&info).unwrap(),
+                    Err(error) => serde_json::json!({ "error": error }).to_string(),
+                }
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "frame",
+            Function::new(ctx.clone(), move |id: u32, time: f64| -> bool {
+                state.video_frame(id, time)
+            })?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "release",
+            Function::new(ctx.clone(), move |id: u32| {
+                state.release_video(id);
+            })?,
+        )?;
+    }
+    native.set("video", object)?;
     Ok(())
 }
 

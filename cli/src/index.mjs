@@ -16,6 +16,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createZip } from "./zip.mjs";
+import { findLocalHost } from "./host.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
@@ -151,12 +152,10 @@ async function downloadHost() {
     }
 }
 
-async function findHost(explicit) {
+async function findHost(explicit, engine) {
     const candidates = [
         explicit,
         process.env.KAPLAY_NATIVE_HOST,
-        join(repoRoot, "target", "release", hostName),
-        join(repoRoot, "target", "debug", hostName),
     ].filter(Boolean);
     for (const candidate of candidates) {
         if (candidate.includes("/") || candidate.includes("\\")) {
@@ -165,6 +164,11 @@ async function findHost(explicit) {
             return candidate;
         }
     }
+    const local = findLocalHost([
+        join(repoRoot, "target", "release", hostName),
+        join(repoRoot, "target", "debug", hostName),
+    ], engine);
+    if (local) return local;
     const onPath = which(hostName);
     if (onPath) return onPath;
     const asset = hostAssetName();
@@ -173,8 +177,8 @@ async function findHost(explicit) {
     return downloadHost();
 }
 
-async function requireHost(explicit) {
-    const host = await findHost(explicit);
+async function requireHost(explicit, engine) {
+    const host = await findHost(explicit, engine);
     if (!host) {
         console.error("kaplay-native-host not found. Build it with `cargo build --release`, pass --host <path>, or let the CLI download a release.");
         process.exit(1);
@@ -215,7 +219,7 @@ function gameDir(options) {
 }
 
 async function withHost(options, args, { capture = false } = {}) {
-    const host = await requireHost(options.host);
+    const host = await requireHost(options.host, options["js-engine"]);
     if (capture) {
         return spawnSync(host, args, { encoding: "utf8" });
     }
@@ -241,7 +245,7 @@ async function runCommand(options) {
 async function devCommand(options) {
     const dir = gameDir(options);
     const base = autoPreload(dir, options);
-    const host = await requireHost(options.host);
+    const host = await requireHost(options.host, options["js-engine"]);
     const start = () => {
         const child = spawn(host, hostArgs(base, { dir }), { stdio: "inherit" });
         child.on("exit", () => {});
@@ -350,7 +354,7 @@ async function packCommand(options) {
         name = basename(dir);
         ({ bytes: pakBytes, count, bundled } = await createPak(dir, options));
     }
-    const host = await requireHost(options.host);
+    const host = await requireHost(options.host, options["js-engine"]);
     const tag = platformTag() ?? "unknown";
     const base = options.out ? resolve(options.out) : join(dir ?? process.cwd(), "dist", `${name}-${tag}`);
     const out = process.platform === "win32" && !base.endsWith(".exe") ? `${base}.exe` : base;
@@ -414,7 +418,7 @@ async function doctorCommand(options) {
     checks.push(["platform", `${process.platform} ${process.arch}`]);
     checks.push(["host release", hostAssetName() ?? "unsupported"]);
     checks.push(["host cache", cacheDir()]);
-    const host = await findHost(options.host);
+    const host = await findHost(options.host, options["js-engine"]);
     checks.push(["host binary", host ?? "not found"]);
     checks.push(["DISPLAY", process.env.DISPLAY ?? "(unset)"]);
     checks.push(["WAYLAND_DISPLAY", process.env.WAYLAND_DISPLAY ?? "(unset)"]);
@@ -428,7 +432,7 @@ async function doctorCommand(options) {
 }
 
 async function enginesCommand(options) {
-    const host = await requireHost(options.host);
+    const host = await requireHost(options.host, options["js-engine"]);
     const result = spawnSync(host, ["--engines"], { encoding: "utf8" });
     if (result.status !== 0) {
         console.error(result.stderr || "failed to list javascript engines");

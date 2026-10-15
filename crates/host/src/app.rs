@@ -301,11 +301,12 @@ impl Inner {
         self.state
             .gl
             .borrow_mut()
-            .present(size.width as i32, size.height as i32);
-        self.window.pre_present_notify();
-        if let Err(error) = self.gl_surface.swap_buffers(&self.gl_context) {
-            log::error!("swap buffers: {error}");
-        }
+            .present(size.width as i32, size.height as i32, || {
+                self.window.pre_present_notify();
+                if let Err(error) = self.gl_surface.swap_buffers(&self.gl_context) {
+                    log::error!("swap buffers: {error}");
+                }
+            });
     }
 }
 
@@ -328,11 +329,7 @@ fn find_module_entry(html: &str) -> Option<String> {
         .iter()
         .find(|(module, _)| *module)
         .or_else(|| candidates.first())?;
-    let path = src.trim_start_matches('/');
-    if path.is_empty() {
-        return None;
-    }
-    Some(path.to_string())
+    kaplay_native_pak::normalize(src).filter(|path| !path.is_empty())
 }
 
 fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
@@ -425,7 +422,7 @@ impl HostApp {
         }
         result?;
         if self.failed {
-            anyhow::bail!("failed to create a window with an OpenGL 2.1 context");
+            anyhow::bail!("native host startup failed; see the errors above");
         }
         Ok(())
     }
@@ -527,6 +524,7 @@ impl HostApp {
             ))),
             images: std::cell::RefCell::new(std::collections::HashMap::new()),
             next_image: Cell::new(1),
+            videos: std::cell::RefCell::new(crate::video::Videos::default()),
             assets: self.assets.clone(),
             window: window.clone(),
             quit: Cell::new(false),
@@ -574,37 +572,70 @@ impl HostApp {
         }
 
         let preloads = self.config.preload.clone();
+        let html = ["index.html", "public/index.html"]
+            .iter()
+            .find_map(|path| state.assets.read_text(path));
+        if let Some(html) = &html {
+            if let Err(error) = js.call_global("__kapNative_loadDocument", &[JsArg::Str(html)]) {
+                log::error!("document error: {error}");
+                event_loop.exit();
+                return None;
+            }
+        }
         let script_source = if let Some(script) = &self.config.script {
-            std::fs::read_to_string(script).ok()
+            std::fs::read_to_string(script).ok().map(|source| {
+                (
+                    script
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    source,
+                )
+            })
         } else {
-            let entry = ["index.html", "public/index.html"]
-                .iter()
-                .find_map(|path| state.assets.read_text(path))
-                .and_then(|html| find_module_entry(&html));
+            let entry = html.as_ref().and_then(|html| find_module_entry(html));
             entry
-                .and_then(|path| state.assets.read_text(&path))
+                .and_then(|path| state.assets.read_text(&path).map(|source| (path, source)))
                 .or_else(|| {
                     ["main.js", "game/main.js", "index.js"]
                         .iter()
-                        .find_map(|path| state.assets.read_text(path))
+                        .find_map(|path| {
+                            state
+                                .assets
+                                .read_text(path)
+                                .map(|source| (path.to_string(), source))
+                        })
                 })
         };
         let mut preload_sources: Vec<String> = Vec::new();
         for preload in &preloads {
             match std::fs::read_to_string(preload) {
                 Ok(source) => preload_sources.push(source),
-                Err(error) => log::error!("failed to read preload {}: {error}", preload.display()),
+                Err(error) => {
+                    log::error!("failed to read preload {}: {error}", preload.display());
+                    event_loop.exit();
+                    return None;
+                }
             }
         }
         for source in preload_sources {
             if let Err(error) = js.eval_preload(&source) {
                 log::error!("preload error: {error}");
+                event_loop.exit();
+                return None;
             }
         }
-        if let Some(source) = script_source {
-            if let Err(error) = js.eval_module("game", &source) {
+        if let Some((name, source)) = script_source {
+            if let Err(error) = js.eval_module(&name, &source) {
                 log::error!("script error: {error}");
+                event_loop.exit();
+                return None;
             }
+        } else {
+            log::error!("game entry script not found; provide --script or a directory containing index.html or main.js");
+            event_loop.exit();
+            return None;
         }
 
         let initial_size = window.inner_size();

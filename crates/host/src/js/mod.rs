@@ -5,6 +5,8 @@ use std::time::Instant;
 
 use crate::state::HostState;
 
+mod modules;
+
 #[cfg(feature = "quickjs")]
 mod quickjs;
 #[cfg(feature = "v8")]

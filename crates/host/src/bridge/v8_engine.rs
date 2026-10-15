@@ -160,6 +160,7 @@ pub fn install(
     install_fs(scope, native, data);
     install_storage(scope, native, data);
     install_image(scope, native, data);
+    install_video(scope, native, data);
     install_font(scope, native, data);
     install_canvas(scope, native, data);
     install_gl(scope, native, data);
@@ -378,6 +379,33 @@ fn install_image(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Loca
     register(scope, object, "width", image_width, data);
     register(scope, object, "height", image_height, data);
     set_property(scope, native, "image", object.into());
+}
+
+fn install_video(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Local<Value>) {
+    let object = v8::Object::new(scope);
+    let available = v8::Boolean::new(scope, crate::video::available());
+    set_property(scope, object, "available", available.into());
+    register(scope, object, "load", video_load, data);
+    register(scope, object, "frame", video_frame, data);
+    register(scope, object, "release", video_release, data);
+    set_property(scope, native, "video", object.into());
+}
+
+fn video_load<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {
+    let path = string_arg(scope, &args, 0);
+    let result = match host(&args).load_video(&path) {
+        Ok(info) => serde_json::to_string(&info).unwrap(),
+        Err(error) => serde_json::json!({ "error": error }).to_string(),
+    };
+    set_string(scope, &mut rv, &result);
+}
+
+fn video_frame<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {
+    rv.set_bool(host(&args).video_frame(u32_arg(scope, &args, 0), f64_arg(scope, &args, 1)));
+}
+
+fn video_release<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, _rv: Rv<'s>) {
+    host(&args).release_video(u32_arg(scope, &args, 0));
 }
 
 fn image_load<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {

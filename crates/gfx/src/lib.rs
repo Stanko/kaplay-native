@@ -290,11 +290,15 @@ impl GlState {
         }
     }
 
-    pub fn present(&mut self, window_width: i32, window_height: i32) {
+    /// Draw to the window and swap while its framebuffer is still bound.
+    /// The game's GL state is restored after the swap completes.
+    pub fn present(&mut self, window_width: i32, window_height: i32, swap_buffers: impl FnOnce()) {
         let Some(default) = self.default_framebuffer.as_ref() else {
+            swap_buffers();
             return;
         };
         let Some(blit) = self.blit.as_ref() else {
+            swap_buffers();
             return;
         };
         let scale = (window_width.max(1) as f32 / default.width as f32)
@@ -346,6 +350,10 @@ impl GlState {
             gl.bind_texture(glow::TEXTURE_2D, Some(default.color));
             gl.uniform_1_i32(blit.texture_location.as_ref(), 0);
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+
+            // macOS's flushBuffer needs the window framebuffer bound. Restoring
+            // the offscreen framebuffer first leaves the visible window blank.
+            swap_buffers();
 
             let restore_buffer = saved_attrib
                 .buffer

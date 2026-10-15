@@ -82,6 +82,24 @@ export function installStub() {
             width: (id) => images.get(id)?.width ?? -1,
             height: (id) => images.get(id)?.height ?? -1,
         },
+        video: {
+            available: false,
+            load: (url) => {
+                if (!files.has(url)) return JSON.stringify({ error: "video asset not found: " + url });
+                const id = nextId();
+                images.set(id, { width: 4, height: 3 });
+                record("video.load", [url]);
+                return JSON.stringify({ id, width: 4, height: 3, duration: 1 });
+            },
+            frame: (id, time) => {
+                record("video.frame", [id, time]);
+                return images.has(id);
+            },
+            release: (id) => {
+                images.delete(id);
+                record("video.release", [id]);
+            },
+        },
         font: {
             register: (family, bytes) => {
                 record("font.register", [family, bytes.length]);

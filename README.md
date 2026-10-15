@@ -97,8 +97,10 @@ node cli/src/index.mjs engines
 node cli/src/index.mjs doctor
 ```
 
-The host binary is found with `--host`, `KAPLAY_NATIVE_HOST`, next to the CLI,
-or on `PATH`.
+The CLI looks for the host in `--host`, `KAPLAY_NATIVE_HOST`, local Cargo
+builds (`target/release`, then `target/debug`), `PATH`, and the download cache.
+With `--js-engine`, it prefers a local build that supports the requested engine.
+Explicit host overrides keep priority.
 
 ## Distributing a game
 
@@ -141,6 +143,27 @@ The entry script is evaluated as an ES module, like
 `<script type="module">` in a browser. Top-level declarations stay
 module-scoped, so they cannot collide with globals that KAPLAY or another
 library exports onto `window`.
+
+Both engines load static and dynamic imports from the game directory or `.pak`,
+relative to the importing chunk, and provide `import.meta.url`. The host creates
+the elements in `index.html` before evaluating the game, including an existing
+canvas. The DOM shim supports basic element lookup; CSS layout and inline scripts
+are not implemented.
+
+Local `<video>` playback uses `ffmpeg` and `ffprobe` from `PATH`. Both must also
+be installed on machines running a packaged game that uses video. The host
+decodes short clips into native RGBA frames (up to 256 MiB per decoded clip),
+supports play, pause, seeking, looping, playback rate, and WebGL texture uploads.
+Decoding happens when a clip first loads; longer clips can stall loading. Video
+audio and remote video URLs are not implemented. `navigator.mediaCapabilities`
+reports video support when these tools are available; load failures raise media
+errors and reject `play()`.
+
+Short synthesized dialogue sounds can use sine, square, sawtooth, or triangle
+oscillators with lowpass, highpass, bandpass, or notch biquads. Scheduled notes
+and their parameter ramps are rendered to PCM when playback begins (up to 30
+seconds). Filter graph changes after playback starts are not applied to that
+note. This is intended for short effects rather than a live synthesizer.
 
 ## Bundling from source
 
@@ -206,7 +229,8 @@ node cli/src/index.mjs run --web-dist path/to/game/client/dist --no-vsync --stat
 - `cargo build --release` picks the `release` profile (`lto = "thin"`,
   `codegen-units = 1`); `cargo build` alone produces a debug host whose frame
   time says nothing about shipping performance. The CLI prefers
-  `target/release/kaplay-native-host` when both exist.
+  `target/release/kaplay-native-host` when both exist and it supports the
+  requested `--js-engine`.
 - Run `dist`, not a dev server or a source bundle. `vite build` minifies and
   substitutes `import.meta.env.DEV`, which is how games turn their own debug
   mode off.

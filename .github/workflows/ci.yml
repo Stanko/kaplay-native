@@ -40,10 +40,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
-            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 ffmpeg
       - run: cargo clippy -p kaplay-native-host --all-targets --no-default-features --features v8 -- -D warnings
       - run: cargo test -p kaplay-native-host --no-default-features --features v8
       - run: cargo test -p kaplay-native-host --features v8
+      - run: cargo test -p kaplay-native-host --features v8 video::tests::decodes_video_frames_and_timestamps -- --ignored
 
   node:
     name: Node (${{ matrix.os }})
@@ -57,7 +58,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test shim/test/shim.test.js
+      - run: node --test cli/test/*.test.mjs shim/test/shim.test.js
       - name: Pack the smoke example
         run: node cli/src/index.mjs build examples/smoke --out smoke.pak
 
@@ -90,6 +91,21 @@ jobs:
             --js-engine v8 --screenshot-raw v8.rgba
           cmp quickjs.rgba v8.rgba
           node scripts/check-frame.mjs v8.rgba 320 240
+      - name: Split web builds render across engines
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -o pipefail
+          for engine in quickjs v8; do
+            xvfb-run -a target/release/kaplay-native-host \
+              --dir examples/modules --js-engine "$engine" \
+              --window 320x240 --frames 5 --no-steam --no-audio \
+              --screenshot-raw "modules-$engine.rgba" 2>&1 | tee "modules-$engine.log"
+            grep -q 'MODULES OK' "modules-$engine.log"
+            node scripts/check-frame.mjs "modules-$engine.rgba" 320 240
+          done
+          cmp modules-quickjs.rgba modules-v8.rgba
       - name: Bridge parity across engines
         shell: bash
         env:

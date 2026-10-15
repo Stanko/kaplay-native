@@ -4,6 +4,8 @@
   bundle passed with `--preload`.
 - `smoke` - raw WebGL without KAPLAY: clears the screen, uploads a textured
   quad, and captures a screenshot. Used as the CI smoke test.
+- `modules` - a web build with an HTML canvas, static imports, dynamic imports,
+  and top-level await. Draws red, green, and blue bands without a preload.
 - `steam` - KAPLAY demo for Steamworks: player/stat/achievement and cloud
   status, with Space/A/S/D to write the cloud file, unlock
   `ACH_WIN_ONE_GAME`, add a `NumWins` stat, and delete the cloud file. Requires

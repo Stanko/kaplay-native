@@ -6,6 +6,7 @@ mod js;
 mod keys;
 mod screenshots;
 mod state;
+mod video;
 
 use std::path::PathBuf;
 

@@ -13,6 +13,8 @@ use super::{JsArg, Watchdog};
 use crate::bridge;
 use crate::state::HostState;
 
+mod modules;
+
 static INIT: Once = Once::new();
 
 pub fn version() -> String {
@@ -38,7 +40,7 @@ unsafe extern "C" fn promise_rejected(message: PromiseRejectMessage) {
     let scope = unsafe { v8::CallbackScope::new(&message) };
     let scope = std::pin::pin!(scope);
     let scope = &mut scope.init();
-    log::error!("unhandled rejection: {}", value.to_rust_string_lossy(scope));
+    log::error!("unhandled rejection: {}", value_error(scope, value));
 }
 
 pub struct Engine {
@@ -55,6 +57,7 @@ impl Engine {
         isolate.set_microtasks_policy(MicrotasksPolicy::Explicit);
         isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 10);
         isolate.set_promise_reject_callback(promise_rejected);
+        modules::install(&mut isolate, state.assets.clone());
 
         let context = {
             v8::scope!(let scope, &mut isolate);
@@ -142,7 +145,11 @@ macro_rules! exception_text {
                 .map(|value| value.to_rust_string_lossy($caught))
                 .unwrap_or_default();
             if stack.is_empty() {
-                message
+                if message.is_empty() {
+                    "JavaScript operation failed without an exception".to_string()
+                } else {
+                    message
+                }
             } else {
                 format!("{message}\n{stack}")
             }
@@ -155,39 +162,62 @@ fn eval_module_in(
     name: &str,
     source: &str,
 ) -> Result<(), String> {
-    let source = v8::String::new(scope, source)
-        .ok_or_else(|| "failed to allocate module source".to_string())?;
-    let resource_name =
-        v8::String::new(scope, name).ok_or_else(|| "failed to allocate module name".to_string())?;
-    let origin = v8::ScriptOrigin::new(
-        scope,
-        resource_name.into(),
-        0,
-        0,
-        false,
-        -1,
-        None,
-        false,
-        false,
-        true,
-        None,
-    );
     v8::tc_scope!(let caught, scope);
-    let mut source = v8::script_compiler::Source::new(source, Some(&origin));
-    let Some(module) = v8::script_compiler::compile_module(caught, &mut source) else {
+    let Some(module) = modules::compile(caught, name, source) else {
         return Err(exception_text!(caught));
     };
-    if module
-        .instantiate_module(caught, |_context, _specifier, _attributes, _referrer| None)
-        .is_none()
-    {
+    if module.instantiate_module(caught, modules::resolve_import) != Some(true) {
         return Err(exception_text!(caught));
     }
-    let _ = module.evaluate(caught);
-    if caught.has_caught() {
-        return Err(exception_text!(caught));
+    evaluate_module(caught, module)
+}
+
+fn value_error(scope: &mut v8::PinScope<'_, '_>, value: Local<v8::Value>) -> String {
+    let message = value.to_rust_string_lossy(scope);
+    if let Ok(object) = Local::<v8::Object>::try_from(value) {
+        let key = v8::String::new(scope, "stack").unwrap();
+        if let Some(stack) = object
+            .get(scope, key.into())
+            .filter(|stack| stack.is_string())
+        {
+            let stack = stack.to_rust_string_lossy(scope);
+            if !stack.is_empty() {
+                return stack;
+            }
+        }
     }
+    message
+}
+
+fn evaluate_module(
+    scope: &mut v8::PinScope<'_, '_>,
+    module: Local<v8::Module>,
+) -> Result<(), String> {
+    v8::tc_scope!(let caught, scope);
+    let Some(result) = module.evaluate(caught) else {
+        return Err(exception_text!(caught));
+    };
+    let promise = Local::<v8::Promise>::try_from(result)
+        .map_err(|_| "module evaluation did not return a promise".to_string())?;
+    promise.mark_as_handled();
     caught.perform_microtask_checkpoint();
+    if promise.state() == v8::PromiseState::Rejected {
+        let reason = promise.result(caught);
+        return Err(value_error(caught, reason));
+    }
+    // A pending top-level await can reject after a network/timer callback.
+    if promise.state() == v8::PromiseState::Pending {
+        let rejected = v8::Function::new(
+            caught,
+            |scope: &mut v8::PinScope,
+             args: v8::FunctionCallbackArguments,
+             _rv: v8::ReturnValue| {
+                log::error!("module evaluation: {}", value_error(scope, args.get(0)));
+            },
+        )
+        .ok_or_else(|| "failed to install module error handler".to_string())?;
+        promise.catch(caught, rejected);
+    }
     Ok(())
 }
 
@@ -224,16 +254,12 @@ fn eval_preload_in(scope: &mut v8::PinScope<'_, '_>, source: &str) -> Result<(),
         return Err(exception_text!(caught));
     };
     if module
-        .instantiate_module(caught, |_context, _specifier, _attributes, _referrer| None)
+        .instantiate_module(caught, modules::resolve_import)
         .is_none()
     {
         return Err(exception_text!(caught));
     }
-    let _ = module.evaluate(caught);
-    if caught.has_caught() {
-        return Err(exception_text!(caught));
-    }
-    caught.perform_microtask_checkpoint();
+    evaluate_module(caught, module)?;
     expose_module_exports(caught, module)
 }
 
@@ -339,15 +365,75 @@ impl WatchdogThread {
 
 #[cfg(test)]
 mod tests {
-    use super::{eval_preload_in, initialize};
+    use super::{eval_module_in, eval_preload_in, initialize, modules};
 
     fn with_scope<T>(test: impl FnOnce(&mut v8::PinScope<'_, '_>) -> T) -> T {
+        with_assets(&[], test)
+    }
+
+    fn with_assets<T>(
+        files: &[(&str, &str)],
+        test: impl FnOnce(&mut v8::PinScope<'_, '_>) -> T,
+    ) -> T {
         initialize();
         let mut isolate = v8::Isolate::new(Default::default());
+        isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+        modules::install(&mut isolate, crate::js::modules::test_assets(files));
         v8::scope!(let scope, &mut isolate);
         let context = v8::Context::new(scope, Default::default());
         let scope = &mut v8::ContextScope::new(scope, context);
         test(scope)
+    }
+
+    #[test]
+    fn module_startup_errors_include_the_message_and_source() {
+        with_scope(|scope| {
+            let error = eval_module_in(scope, "assets/main.js", "missingKaplay();").unwrap_err();
+            assert!(error.contains("missingKaplay"), "{error}");
+            assert!(error.contains("assets/main.js"), "{error}");
+            let error = eval_module_in(
+                scope,
+                "assets/await.js",
+                "await Promise.reject(new Error('await failed'));",
+            )
+            .unwrap_err();
+            assert!(error.contains("await failed"), "{error}");
+        });
+    }
+
+    #[test]
+    fn resolves_static_dynamic_and_cyclic_imports_from_pak() {
+        with_assets(&[
+            ("assets/shared.js", "globalThis.loads = (globalThis.loads ?? 0) + 1; export const value = 42; export const url = import.meta.url;"),
+            ("assets/a.js", "import { b } from './b.js'; export function a() { return b(); }"),
+            ("assets/b.js", "import { a } from './a.js'; export function b() { return 1; }"),
+        ], |scope| {
+            eval_module_in(scope, "assets/main.js", "import { value, url } from './shared.js'; import { a } from './a.js'; const again = await import('./shared.js'); globalThis.result = [value, again.value, loads, a(), url].join('|');").unwrap();
+            assert_eq!(read(scope, "result"), "42|42|1|1|kaplay-native://game/assets/shared.js");
+        });
+    }
+
+    #[test]
+    fn dynamic_import_waits_for_top_level_await() {
+        with_assets(&[("assets/lazy.js", "await new Promise(resolve => { globalThis.resumeModule = resolve; }); export const value = 42;")], |scope| {
+            eval_module_in(scope, "assets/main.js", "globalThis.result = 0; import('./lazy.js').then(module => { globalThis.result = module.value; });").unwrap();
+            assert_eq!(read(scope, "String(result)"), "0");
+            read(scope, "resumeModule()");
+            scope.perform_microtask_checkpoint();
+            assert_eq!(read(scope, "String(result)"), "42");
+        });
+    }
+
+    #[test]
+    fn missing_imports_report_both_paths_and_dynamic_imports_reject() {
+        with_scope(|scope| {
+            let error =
+                eval_module_in(scope, "assets/main.js", "import './missing.js';").unwrap_err();
+            assert!(error.contains("assets/main.js"), "{error}");
+            assert!(error.contains("assets/missing.js"), "{error}");
+            eval_module_in(scope, "assets/dynamic.js", "globalThis.failure = ''; await import('./missing.js').catch(error => { globalThis.failure = error.message; });").unwrap();
+            assert!(read(scope, "failure").contains("assets/missing.js"));
+        });
     }
 
     fn read(scope: &mut v8::PinScope<'_, '_>, expression: &str) -> String {
