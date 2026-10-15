@@ -342,8 +342,18 @@ fn instantiate_and_evaluate<'s>(
     module: Local<'s, Module>,
 ) -> Result<(), String> {
     instantiate_module(scope, module)?;
-    evaluate_module(scope, module)?;
+    let value = evaluate_module(scope, module)?;
     scope.perform_microtask_checkpoint();
+    if module.get_status() == ModuleStatus::Errored {
+        return Err(exception_value_text(scope, module.get_exception()));
+    }
+    if let Some(value) = value {
+        if let Ok(promise) = Local::<v8::Promise>::try_from(value) {
+            if promise.state() == v8::PromiseState::Rejected {
+                return Err(exception_value_text(scope, promise.result(scope)));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -767,6 +777,21 @@ mod tests {
             )
             .unwrap();
             assert_eq!(read(scope, "String(globalThis.count)"), "1");
+        });
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn top_level_await_rejections_are_reported() {
+        let dir = fixture("top-level-await", &[("entry.js", "")]);
+        with_assets(&dir, |scope| {
+            let error = eval_module_in(
+                scope,
+                "entry.js",
+                "await Promise.reject(new Error('boom'));",
+            )
+            .unwrap_err();
+            assert!(error.contains("boom"), "{error}");
         });
         std::fs::remove_dir_all(dir).ok();
     }

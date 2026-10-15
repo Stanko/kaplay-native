@@ -459,6 +459,19 @@ mod tests {
     }
 
     #[test]
+    fn top_level_await_rejections_are_reported() {
+        with_fixture("top-level-await", &[("entry.js", "")], |context| {
+            let error = evaluate_module(
+                context,
+                "entry.js",
+                "await Promise.reject(new Error('boom'));",
+            )
+            .unwrap_err();
+            assert!(error.contains("boom"), "{error}");
+        });
+    }
+
+    #[test]
     fn module_evaluation_errors_are_reported() {
         with_fixture("throwing", &[("entry.js", "")], |context| {
             let error =
