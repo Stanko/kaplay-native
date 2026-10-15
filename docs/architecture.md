@@ -158,6 +158,18 @@ normal asset resolution, decodes it through the same native pipeline, and
 represents playback as a single looping or one-shot voice. `playMusic`'s
 `connect`/`disconnect` calls re-evaluate the graph gain on the fly.
 
+Video takes a parallel path. `kaplay-native-video` demuxes an MP4 with
+`symphonia`'s ISO-MP4 reader and decodes the H.264 track with
+`rusty_h264-decoder`, both pure Rust, so there is no C dependency and no
+assembly build step. `Video::open` probes the container, requires an H.264
+track, converts `avcC` to Annex-B parameter sets, and rewrites the
+length-prefixed samples as Annex-B access units. A decoded-frame window keeps
+the frames around the play position, and `frame_at(seconds)` decodes forward or
+seeks backward on demand. The shim's `HTMLVideoElement` owns the clock and asks
+for a frame; `gl.texImage2D` with a video source uploads that frame as an RGBA
+texture. Audio from the same file is handed to the audio decoder, so the video's
+sound plays through the regular mixer as a media element voice.
+
 ## The default framebuffer
 
 WebGL's default framebuffer is a real offscreen framebuffer

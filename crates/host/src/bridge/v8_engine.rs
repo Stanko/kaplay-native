@@ -165,6 +165,7 @@ pub fn install(
     install_gl(scope, native, data);
     install_net(scope, native, data);
     install_audio(scope, native, data);
+    install_video(scope, native, data);
     install_steam(scope, native, data);
 
     let global = scope.get_current_context().global(scope);
@@ -813,6 +814,51 @@ fn net_read_message<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv
     rv.set_int32(length);
 }
 
+fn install_video(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Local<Value>) {
+    let object = v8::Object::new(scope);
+    register(scope, object, "open", video_open, data);
+    register(scope, object, "close", video_close, data);
+    set_property(scope, native, "video", object.into());
+}
+
+fn video_open<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, mut rv: Rv<'s>) {
+    let state = host(&args);
+    let Some(info) = with_u8(args.get(0), |bytes| state.open_video(bytes)).flatten() else {
+        return;
+    };
+    let object = v8::Object::new(scope);
+    set_property(
+        scope,
+        object,
+        "id",
+        v8::Number::new(scope, f64::from(info.id)).into(),
+    );
+    set_property(
+        scope,
+        object,
+        "width",
+        v8::Number::new(scope, f64::from(info.width)).into(),
+    );
+    set_property(
+        scope,
+        object,
+        "height",
+        v8::Number::new(scope, f64::from(info.height)).into(),
+    );
+    set_property(
+        scope,
+        object,
+        "duration",
+        v8::Number::new(scope, info.duration).into(),
+    );
+    rv.set(object.into());
+}
+
+fn video_close<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, _rv: Rv<'s>) {
+    let id = u32_arg(scope, &args, 0);
+    host(&args).close_video(id);
+}
+
 fn install_audio(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Local<Value>) {
     let object = v8::Object::new(scope);
     register(scope, object, "available", audio_available, data);
@@ -1299,6 +1345,13 @@ fn install_gl(scope: &PinScope<'_, '_>, native: Local<v8::Object>, data: Local<V
     register(
         scope,
         object,
+        "texImage2DVideo",
+        gl_tex_image_2d_video,
+        data,
+    );
+    register(
+        scope,
+        object,
         "texSubImage2DCanvas",
         gl_tex_sub_image_2d_canvas,
         data,
@@ -1700,6 +1753,17 @@ fn gl_tex_sub_image_2d_image<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s
         &image.pixels,
         options,
     );
+}
+
+fn gl_tex_image_2d_video<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, _rv: Rv<'s>) {
+    let state = host(&args);
+    let target = gl_arg_u32(scope, &args, 0);
+    let internal_format = gl_arg_i32(scope, &args, 1);
+    let format = gl_arg_u32(scope, &args, 2);
+    let ty = gl_arg_u32(scope, &args, 3);
+    let video = gl_arg_u32(scope, &args, 4);
+    let time = f64_arg(scope, &args, 5);
+    state.upload_video_frame(video, time, target, internal_format, format, ty);
 }
 
 fn gl_tex_image_2d_canvas<'s, 'i>(scope: &mut PinScope<'s, 'i>, args: Args<'s>, _rv: Rv<'s>) {

@@ -7,10 +7,12 @@ use std::time::Instant;
 
 use kaplay_native_audio::Audio;
 use kaplay_native_canvas2d::Canvas2d;
+use kaplay_native_gfx::pixels::UploadOptions;
 use kaplay_native_gfx::GlState;
 use kaplay_native_net::{HttpResponse, Network};
 use kaplay_native_pak::AssetSource;
 use kaplay_native_steam::SteamApi;
+use kaplay_native_video::Video;
 use winit::window::Window;
 
 pub struct ImageData {
@@ -24,11 +26,20 @@ pub struct PendingMessage {
     pub data: Vec<u8>,
 }
 
+pub struct VideoInfo {
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub duration: f64,
+}
+
 pub struct HostState {
     pub gl: Rc<RefCell<GlState>>,
     pub canvas: Rc<RefCell<Canvas2d>>,
     pub images: RefCell<HashMap<u32, ImageData>>,
+    pub videos: RefCell<HashMap<u32, Video>>,
     pub next_image: Cell<u32>,
+    pub next_video: Cell<u32>,
     pub assets: Rc<AssetSource>,
     pub window: Arc<Window>,
     pub quit: Cell<bool>,
@@ -66,6 +77,64 @@ impl HostState {
             },
         );
         id
+    }
+
+    pub fn open_video(&self, bytes: &[u8]) -> Option<VideoInfo> {
+        let video = Video::open(bytes.to_vec())
+            .map_err(|error| log::warn!("video: {error}"))
+            .ok()?;
+        let id = self.next_video.get();
+        self.next_video.set(id + 1);
+        let info = VideoInfo {
+            id,
+            width: video.width(),
+            height: video.height(),
+            duration: video.duration(),
+        };
+        self.videos.borrow_mut().insert(id, video);
+        Some(info)
+    }
+
+    pub fn close_video(&self, id: u32) {
+        self.videos.borrow_mut().remove(&id);
+    }
+
+    pub fn upload_video_frame(
+        &self,
+        id: u32,
+        time: f64,
+        target: u32,
+        internal_format: i32,
+        format: u32,
+        ty: u32,
+    ) {
+        let mut videos = self.videos.borrow_mut();
+        let Some(video) = videos.get_mut(&id) else {
+            return;
+        };
+        let frame = match video.frame_at(time) {
+            Ok(frame) => frame,
+            Err(error) => {
+                log::warn!("video frame: {error}");
+                return;
+            }
+        };
+        let options = UploadOptions {
+            flip_y: self.gl.borrow().upload_options().flip_y,
+            premultiply: false,
+        };
+        self.gl.borrow_mut().tex_image_2d(
+            target,
+            0,
+            internal_format,
+            frame.width as i32,
+            frame.height as i32,
+            0,
+            format,
+            ty,
+            Some(&frame.pixels),
+            options,
+        );
     }
 
     pub fn decode_image(&self, bytes: &[u8]) -> Option<u32> {

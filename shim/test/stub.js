@@ -4,6 +4,7 @@ export function installStub() {
     const files = new Map([["font.ttf", new Uint8Array([1, 2, 3, 4])]]);
     const images = new Map();
     const canvases = new Map();
+    const videos = new Map();
     const netRoutes = new Map();
     const netResponses = new Map();
     const netMessages = new Map();
@@ -178,6 +179,15 @@ export function installStub() {
                 out.set(data.subarray(0, out.length));
                 return data.length;
             },
+        },
+        video: {
+            open: (bytes) => {
+                record("video.open", [bytes.length]);
+                const id = nextId();
+                videos.set(id, { width: 160, height: 120, duration: 1 });
+                return { id, width: 160, height: 120, duration: 1 };
+            },
+            close: (id) => record("video.close", [id]),
         },
         audio: {
             available: () => true,
@@ -429,6 +439,7 @@ export function installStub() {
         out.set([9, 8, 7, 6]);
         return true;
     };
+    globalThis.__kapNative.gl.texImage2DVideo = (...args) => record("gl.texImage2DVideo", args);
     globalThis.__kapNative.glCalls = () => globalThis.__kapNative.gl;
 
     const net = {
@@ -476,5 +487,5 @@ export function installStub() {
         },
     };
 
-    return { calls, logs, state, files, canvases, net, audio };
+    return { calls, logs, state, files, canvases, videos, net, audio };
 }

@@ -129,6 +129,17 @@ returns `NO_ERROR`, and `isContextLost` returns `false`.
 - `HTMLAudioElement` (`new Audio(url)`) plays music through the same mixer:
   `play`, `pause`, `currentTime`, `duration`, `volume`, `playbackRate`, `loop`,
   and `onended`.
+- `HTMLVideoElement` (`document.createElement("video")`) plays H.264 MP4 files
+  bundled with the game (or served over HTTP(S) with `--allow-network`):
+  `play`, `pause`, `load`, `currentTime`, `duration`, `loop`, `muted`,
+  `volume`, `playbackRate`, `videoWidth`, `videoHeight`,
+  `canPlayType("video/mp4")`, and the `loadedmetadata`, `loadeddata`, `canplay`,
+  `playing`, `timeupdate`, `ended`, and `error` events. Frames decode on
+  background threads and are drawn with `gl.texImage2D(target, level,
+  internalformat, format, type, video)`, which is the path KAPLAY's `video()`
+  component uses. An audio track plays through the same mixer as
+  `HTMLAudioElement`; a silent file plays without one. WebM, VP8/VP9, and AV1
+  are not supported.
 - Decoding supports WAV, MP3, FLAC, Ogg Vorbis, and Opus, from bundled files,
   data URLs, and HTTP(S) URLs.
 - `AudioWorklet`, `AnalyserNode`, `BiquadFilterNode`, `OscillatorNode`, and

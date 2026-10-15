@@ -780,6 +780,113 @@ test("media element sources route through the graph", async () => {
     assert.ok(Math.abs(after.args[1] - 0.25) < 1e-6);
 });
 
+test("video elements open, play, and advance their clock", async () => {
+    stub.files.set("video/intro.mp4", new Uint8Array([1, 2, 3, 4, 5, 6]));
+    const element = document.createElement("video");
+    element.src = "video/intro.mp4";
+    const events = [];
+    element.addEventListener("playing", () => events.push("playing"));
+    element.addEventListener("timeupdate", () => events.push("timeupdate"));
+    assert.equal(element.paused, true);
+
+    const playing = element.play();
+    advance(1);
+    await playing;
+
+    const opened = stub.calls.filter((call) => call.name === "video.open").at(-1);
+    assert.deepEqual(opened.args, [6]);
+    assert.equal(element.paused, false);
+    assert.equal(element.videoWidth, 160);
+    assert.equal(element.videoHeight, 120);
+    assert.equal(element.duration, 1);
+    assert.ok(events.includes("playing"));
+    assert.ok(events.includes("timeupdate"));
+
+    const before = element.currentTime;
+    advance(400);
+    assert.ok(Math.abs(element.currentTime - before - 0.4) < 1e-6);
+    element.pause();
+    assert.equal(element.paused, true);
+    const paused = element.currentTime;
+    advance(400);
+    assert.equal(element.currentTime, paused);
+    element.currentTime = 0.25;
+    assert.equal(element.currentTime, 0.25);
+    assert.ok(stub.calls.some((call) => call.name === "audio.play"));
+});
+
+test("video elements fire ended at the end of playback", async () => {
+    stub.files.set("video/end.mp4", new Uint8Array([1]));
+    const element = document.createElement("video");
+    element.src = "video/end.mp4";
+    let ended = 0;
+    element.onended = () => ended++;
+    const playing = element.play();
+    advance(1);
+    await playing;
+    advance(1500);
+    assert.equal(ended, 1);
+    assert.equal(element.ended, true);
+    assert.equal(element.paused, true);
+    assert.equal(element.currentTime, 1);
+});
+
+test("video elements decode their audio through the media element path", async () => {
+    stub.files.set("video/battle.mp4", new Uint8Array([1, 2, 3, 4]));
+    const element = document.createElement("video");
+    element.src = "video/battle.mp4";
+    element.volume = 0.5;
+    const playing = element.play();
+    advance(1);
+    await playing;
+    const decode = stub.calls.filter((call) => call.name === "audio.decode").at(-1);
+    assert.deepEqual(decode.args.slice(1), [4]);
+    const play = stub.calls.filter((call) => call.name === "audio.play").at(-1);
+    assert.ok(Math.abs(play.args[2] - 0.5) < 1e-6);
+});
+
+test("video textures upload the frame at the current time", async () => {
+    stub.files.set("video/cutscene.mp4", new Uint8Array([1, 2, 3]));
+    const element = document.createElement("video");
+    element.src = "video/cutscene.mp4";
+    const playing = element.play();
+    advance(1);
+    await playing;
+    advance(200);
+
+    const canvas = makeCanvas();
+    const gl = canvas.getContext("webgl");
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, element);
+
+    const call = stub.calls.filter((entry) => entry.name === "gl.texImage2DVideo").at(-1);
+    assert.ok(call);
+    assert.equal(call.args[4], element.__nativeId);
+    assert.ok(Math.abs(call.args[5] - element.currentTime) < 1e-6);
+});
+
+test("changing the video source closes the native handle", async () => {
+    stub.files.set("video/first.mp4", new Uint8Array([1]));
+    stub.files.set("video/second.mp4", new Uint8Array([2]));
+    const element = document.createElement("video");
+    element.src = "video/first.mp4";
+    const playing = element.play();
+    advance(1);
+    await playing;
+    const id = element.__nativeId;
+    element.src = "video/second.mp4";
+    const close = stub.calls.filter((entry) => entry.name === "video.close").at(-1);
+    assert.deepEqual(close.args, [id]);
+    assert.equal(element.__nativeId, 0);
+    assert.equal(element.videoWidth, 0);
+    assert.equal(element.paused, true);
+});
+
+test("video elements report which container they can play", () => {
+    const element = document.createElement("video");
+    assert.equal(element.canPlayType("video/mp4; codecs=\"avc1.42E01E\""), "probably");
+    assert.equal(element.canPlayType("video/webm"), "");
+});
+
 test("suspending and resuming an audio context pauses the engine", async () => {
     const context = new AudioContext();
     await context.suspend();

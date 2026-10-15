@@ -40,6 +40,7 @@ pub fn install<'js>(ctx: &Ctx<'js>, state: Rc<HostState>, shim: &str) -> rquickj
     install_gl(ctx, &native, &state)?;
     install_net(ctx, &native, &state)?;
     install_audio(ctx, &native, &state)?;
+    install_video(ctx, &native, &state)?;
     install_steam(ctx, &native, &state)?;
     ctx.globals().set("__kapNative", native)?;
     ctx.eval::<(), _>(shim)?;
@@ -1050,6 +1051,44 @@ fn install_audio<'js>(
     Ok(())
 }
 
+fn install_video<'js>(
+    ctx: &Ctx<'js>,
+    native: &Object<'js>,
+    state: &Rc<HostState>,
+) -> rquickjs::Result<()> {
+    let object = Object::new(ctx.clone())?;
+    {
+        let state = state.clone();
+        object.set(
+            "open",
+            Function::new(
+                ctx.clone(),
+                move |context: Ctx<'js>, bytes: TypedArray<u8>| -> Option<Object<'js>> {
+                    let data = slice_u8(&bytes)?;
+                    let info = state.open_video(data)?;
+                    let value = Object::new(context.clone()).ok()?;
+                    value.set("id", info.id).ok()?;
+                    value.set("width", info.width).ok()?;
+                    value.set("height", info.height).ok()?;
+                    value.set("duration", info.duration).ok()?;
+                    Some(value)
+                },
+            )?,
+        )?;
+    }
+    {
+        let state = state.clone();
+        object.set(
+            "close",
+            Function::new(ctx.clone(), move |id: u32| {
+                state.close_video(id);
+            })?,
+        )?;
+    }
+    native.set("video", object)?;
+    Ok(())
+}
+
 fn install_steam<'js>(
     ctx: &Ctx<'js>,
     native: &Object<'js>,
@@ -1529,6 +1568,20 @@ fn install_gl<'js>(
                     Some(bytes),
                     options,
                 );
+            }
+        );
+    }
+    {
+        let state = state.clone();
+        register!(
+            "texImage2DVideo",
+            move |target: u32,
+                  internal_format: i32,
+                  format: u32,
+                  ty: u32,
+                  video: u32,
+                  time: f64| {
+                state.upload_video_frame(video, time, target, internal_format, format, ty);
             }
         );
     }
