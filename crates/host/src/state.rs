@@ -7,10 +7,12 @@ use std::time::Instant;
 
 use kaplay_native_audio::Audio;
 use kaplay_native_canvas2d::Canvas2d;
+use kaplay_native_gfx::pixels::UploadOptions;
 use kaplay_native_gfx::GlState;
 use kaplay_native_net::{HttpResponse, Network};
 use kaplay_native_pak::AssetSource;
 use kaplay_native_steam::SteamApi;
+use kaplay_native_video::Video;
 use winit::window::Window;
 
 pub struct ImageData {
@@ -24,11 +26,20 @@ pub struct PendingMessage {
     pub data: Vec<u8>,
 }
 
+pub struct VideoInfo {
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub duration: f64,
+}
+
 pub struct HostState {
     pub gl: Rc<RefCell<GlState>>,
     pub canvas: Rc<RefCell<Canvas2d>>,
     pub images: RefCell<HashMap<u32, ImageData>>,
+    pub videos: RefCell<HashMap<u32, Video>>,
     pub next_image: Cell<u32>,
+    pub next_video: Cell<u32>,
     pub assets: Rc<AssetSource>,
     pub window: Arc<Window>,
     pub quit: Cell<bool>,
@@ -66,6 +77,84 @@ impl HostState {
             },
         );
         id
+    }
+
+    pub fn open_video(&self, bytes: Arc<[u8]>) -> Option<VideoInfo> {
+        let video = Video::open(bytes)
+            .map_err(|error| log::warn!("video: {error}"))
+            .ok()?;
+        let id = self.next_video.get();
+        self.next_video.set(id + 1);
+        let info = VideoInfo {
+            id,
+            width: video.width(),
+            height: video.height(),
+            duration: video.duration(),
+        };
+        self.videos.borrow_mut().insert(id, video);
+        Some(info)
+    }
+
+    pub fn open_video_asset(&self, path: &str) -> Option<VideoInfo> {
+        let Some(bytes) = self.assets.read(path) else {
+            log::warn!("video asset not found: {path}");
+            return None;
+        };
+        self.open_video(bytes)
+    }
+
+    pub fn decode_audio_asset(&self, request: u32, path: &str) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let bytes = self.assets.read(path).unwrap_or_else(|| Arc::from(&[][..]));
+        audio.decode_async(request, bytes);
+    }
+
+    pub fn close_video(&self, id: u32) {
+        self.videos.borrow_mut().remove(&id);
+    }
+
+    pub fn video_frame_ready(&self, id: u32, time: f64) -> bool {
+        self.videos
+            .borrow_mut()
+            .get_mut(&id)
+            .is_some_and(|video| video.frame_ready(time))
+    }
+
+    pub fn upload_video_frame(
+        &self,
+        id: u32,
+        time: f64,
+        target: u32,
+        internal_format: i32,
+        format: u32,
+        ty: u32,
+    ) {
+        let mut videos = self.videos.borrow_mut();
+        let Some(video) = videos.get_mut(&id) else {
+            return;
+        };
+        if let Some(error) = video.take_error() {
+            log::warn!("video frame: {error}");
+        }
+        let frame = video.frame_at(time);
+        let options = UploadOptions {
+            flip_y: self.gl.borrow().upload_options().flip_y,
+            premultiply: false,
+        };
+        self.gl.borrow_mut().tex_image_2d(
+            target,
+            0,
+            internal_format,
+            frame.width as i32,
+            frame.height as i32,
+            0,
+            format,
+            ty,
+            Some(&frame.pixels),
+            options,
+        );
     }
 
     pub fn decode_image(&self, bytes: &[u8]) -> Option<u32> {

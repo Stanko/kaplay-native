@@ -302,11 +302,12 @@ impl Inner {
         self.state
             .gl
             .borrow_mut()
-            .present(size.width as i32, size.height as i32);
-        self.window.pre_present_notify();
-        if let Err(error) = self.gl_surface.swap_buffers(&self.gl_context) {
-            log::error!("swap buffers: {error}");
-        }
+            .present(size.width as i32, size.height as i32, || {
+                self.window.pre_present_notify();
+                if let Err(error) = self.gl_surface.swap_buffers(&self.gl_context) {
+                    log::error!("swap buffers: {error}");
+                }
+            });
     }
 }
 
@@ -527,7 +528,9 @@ impl HostApp {
                 DEFAULT_FONT.to_vec(),
             ))),
             images: std::cell::RefCell::new(std::collections::HashMap::new()),
+            videos: std::cell::RefCell::new(std::collections::HashMap::new()),
             next_image: Cell::new(1),
+            next_video: Cell::new(1),
             assets: self.assets.clone(),
             window: window.clone(),
             quit: Cell::new(false),

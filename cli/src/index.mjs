@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { findLocalHost } from "./host.mjs";
 import { createZip } from "./zip.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -153,12 +154,7 @@ async function downloadHost(engine) {
 }
 
 async function findHost(explicit, engine) {
-    const candidates = [
-        explicit,
-        process.env.KAPLAY_NATIVE_HOST,
-        join(repoRoot, "target", "release", hostName),
-        join(repoRoot, "target", "debug", hostName),
-    ].filter(Boolean);
+    const candidates = [explicit, process.env.KAPLAY_NATIVE_HOST].filter(Boolean);
     for (const candidate of candidates) {
         if (candidate.includes("/") || candidate.includes("\\")) {
             if (existsSync(candidate)) return candidate;
@@ -166,6 +162,11 @@ async function findHost(explicit, engine) {
             return candidate;
         }
     }
+    const local = findLocalHost([
+        join(repoRoot, "target", "release", hostName),
+        join(repoRoot, "target", "debug", hostName),
+    ], engine);
+    if (local) return local;
     const onPath = which(hostName);
     if (onPath) return onPath;
     const asset = hostAssetName(engine);

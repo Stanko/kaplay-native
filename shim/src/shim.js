@@ -936,6 +936,15 @@
                     type,
                     source.__id,
                 );
+            } else if (source instanceof HTMLVideoElement) {
+                native.gl.texImage2DVideo(
+                    target,
+                    internalformat,
+                    format,
+                    type,
+                    source.__nativeId,
+                    source.currentTime,
+                );
             } else if (source instanceof Image) {
                 native.gl.texImage2DImage(target, internalformat, format, type, source.__id);
             } else if (source instanceof ImageData) {
@@ -2080,6 +2089,38 @@
         }
     }
 
+    function decodeAudio(request, start) {
+        return new Promise((resolve, reject) => {
+            pendingDecodes.set(request, { resolve, reject });
+            try {
+                start();
+            } catch (error) {
+                pendingDecodes.delete(request);
+                reject(error);
+            }
+        });
+    }
+
+    function decodeAudioBytes(bytes) {
+        if (!audioBridge || typeof audioBridge.decode !== "function") {
+            return Promise.reject(new Error("audio decoding is not available"));
+        }
+        const request = nextAudioRequest++;
+        return decodeAudio(request, () => audioBridge.decode(request, bytesView(bytes)));
+    }
+
+    function decodeAudioAsset(path) {
+        if (!audioBridge || typeof audioBridge.decodeAsset !== "function") {
+            return Promise.reject(new Error("audio decoding is not available"));
+        }
+        const request = nextAudioRequest++;
+        return decodeAudio(request, () => audioBridge.decodeAsset(request, String(path)));
+    }
+
+    function isBundleAsset(url) {
+        return Boolean(url) && !/^[a-z][a-z0-9+.-]*:/i.test(url) && native.fs.size(url) >= 0;
+    }
+
     class HTMLAudioElement {
         constructor(src) {
             this.src = src === undefined ? "" : String(src);
@@ -2149,9 +2190,7 @@
                 return Promise.resolve();
             }
             if (!this.__ready) {
-                this.__ready = fetchResource(this.src)
-                    .then((response) => response.arrayBuffer())
-                    .then((bytes) => this.__decode(bytes));
+                this.__ready = this.__loadSource();
             }
             return this.__ready
                 .then(() => {
@@ -2173,22 +2212,33 @@
         load() {}
 
         __decode(bytes) {
-            return new Promise((resolve, reject) => {
-                if (!audioBridge || typeof audioBridge.decode !== "function") {
-                    reject(new Error("audio decoding is not available"));
-                    return;
-                }
-                const request = nextAudioRequest++;
-                pendingDecodes.set(request, {
-                    resolve: (buffer) => {
-                        this.__buffer = buffer;
-                        this.duration = buffer.duration;
-                        resolve(buffer);
-                    },
-                    reject,
+            return this.__adoptBytes(bytes);
+        }
+
+        __adoptBytes(bytes) {
+            if (!this.__decodePromise) {
+                this.__decodePromise = decodeAudioBytes(bytes).then((buffer) => {
+                    this.__buffer = buffer;
+                    this.duration = buffer.duration;
+                    return buffer;
                 });
-                audioBridge.decode(request, bytesView(bytes));
-            });
+            }
+            return this.__decodePromise;
+        }
+
+        __loadSource() {
+            if (this.__decodePromise) return this.__decodePromise;
+            this.__decodePromise = (isBundleAsset(this.src)
+                ? decodeAudioAsset(this.src)
+                : fetchResource(this.src)
+                    .then((response) => response.arrayBuffer())
+                    .then((bytes) => decodeAudioBytes(bytes)))
+                .then((buffer) => {
+                    this.__buffer = buffer;
+                    this.duration = buffer.duration;
+                    return buffer;
+                });
+            return this.__decodePromise;
         }
 
         __createVoice() {
@@ -2252,6 +2302,307 @@
 
         removeEventListener(type, fn) {
             this.__listeners.remove(type, fn);
+        }
+    }
+
+    class HTMLVideoElement {
+        constructor(src) {
+            this.__src = src === undefined ? "" : String(src);
+            this.crossOrigin = null;
+            this.playsInline = false;
+            this.autoplay = false;
+            this.preload = "auto";
+            this.width = 0;
+            this.height = 0;
+            this.onended = null;
+            this.error = null;
+            this.paused = true;
+            this.ended = false;
+            this.duration = NaN;
+            this.videoWidth = 0;
+            this.videoHeight = 0;
+            this.__networkState = 0;
+            this.__loop = false;
+            this.__volume = 1;
+            this.__muted = false;
+            this.__playbackRate = 1;
+            this.__base = 0;
+            this.__startedAt = 0;
+            this.__nativeId = 0;
+            this.__ready = null;
+            this.__timer = 0;
+            this.__readyTimer = 0;
+            this.__dataFired = false;
+            this.__seekPending = false;
+            this.__listeners = makeListeners();
+            this.__audio = new HTMLAudioElement(this.__src);
+        }
+
+        get src() {
+            return this.__src;
+        }
+
+        get currentSrc() {
+            return this.__src;
+        }
+
+        get networkState() {
+            return this.__networkState;
+        }
+
+        get readyState() {
+            if (!this.__nativeId) return 0;
+            if (this.ended) return 2;
+            return native.video.ready(this.__nativeId, this.currentTime) ? 2 : 1;
+        }
+
+        set src(value) {
+            const url = value === undefined ? "" : String(value);
+            if (url === this.__src) return;
+            this.__src = url;
+            this.load();
+        }
+
+        get loop() {
+            return this.__loop;
+        }
+
+        set loop(value) {
+            this.__loop = Boolean(value);
+            this.__audio.loop = this.__loop;
+        }
+
+        get volume() {
+            return this.__volume;
+        }
+
+        set volume(value) {
+            this.__volume = Math.min(1, Math.max(0, Number(value) || 0));
+            this.__audio.volume = this.__volume;
+        }
+
+        get muted() {
+            return this.__muted;
+        }
+
+        set muted(value) {
+            this.__muted = Boolean(value);
+            this.__audio.muted = this.__muted;
+        }
+
+        get playbackRate() {
+            return this.__playbackRate;
+        }
+
+        set playbackRate(value) {
+            this.__playbackRate = Math.max(0, Number(value) || 0);
+            this.__audio.playbackRate = this.__playbackRate;
+        }
+
+        get currentTime() {
+            if (this.paused) return this.__base;
+            const elapsed = (audioNow() - this.__startedAt) * this.__playbackRate;
+            let time = this.__base + elapsed;
+            if (this.__loop && Number.isFinite(this.duration) && this.duration > 0) {
+                time %= this.duration;
+            } else if (Number.isFinite(this.duration) && time > this.duration) {
+                time = this.duration;
+            }
+            return time;
+        }
+
+        set currentTime(value) {
+            const time = Math.max(0, Number(value) || 0);
+            this.__base = Number.isFinite(this.duration) && this.duration > 0
+                ? Math.min(time, this.duration)
+                : time;
+            this.__startedAt = audioNow();
+            this.ended = false;
+            this.__audio.currentTime = this.__base;
+            this.__seekPending = true;
+            this.__fire("seeking");
+            this.__startReadyTimer();
+        }
+
+        play() {
+            if (!this.paused) return Promise.resolve();
+            this.paused = false;
+            this.ended = false;
+            this.__startedAt = audioNow();
+            const ready = this.__prepare();
+            ready
+                .then(() => {
+                    if (this.paused) return;
+                    this.__audio.currentTime = this.__base;
+                    this.__audio.play().catch(() => {});
+                    this.__fire("playing");
+                    this.__startTicking();
+                })
+                .catch((error) => {
+                    reportError(error);
+                    this.paused = true;
+                    this.__stopTicking();
+                    this.__fire("error");
+                });
+            return ready.then(() => {});
+        }
+
+        pause() {
+            if (this.paused) return;
+            this.__base = this.currentTime;
+            this.paused = true;
+            this.ended = false;
+            this.__stopTicking();
+            this.__audio.pause();
+        }
+
+        load() {
+            if (this.__nativeId) {
+                native.video.close(this.__nativeId);
+                this.__nativeId = 0;
+            }
+            this.__audio.pause();
+            this.__ready = null;
+            this.__base = 0;
+            this.__startedAt = 0;
+            this.paused = true;
+            this.ended = false;
+            this.duration = NaN;
+            this.videoWidth = 0;
+            this.videoHeight = 0;
+            this.error = null;
+            this.__networkState = this.__src ? 1 : 0;
+            this.__dataFired = false;
+            this.__seekPending = false;
+            this.__stopTicking();
+            this.__stopReadyTimer();
+            this.__audio = new HTMLAudioElement(this.__src);
+        }
+
+        canPlayType(type) {
+            return /mp4|m4v|avc1/i.test(String(type)) ? "probably" : "";
+        }
+
+        addEventListener(type, fn) {
+            this.__listeners.add(type, fn);
+        }
+
+        removeEventListener(type, fn) {
+            this.__listeners.remove(type, fn);
+        }
+
+        __prepare() {
+            if (this.__ready) return this.__ready;
+            if (!this.__src) {
+                this.__ready = Promise.reject(new Error("no video source"));
+                return this.__ready;
+            }
+            const url = this.__src;
+            this.__networkState = 2;
+            this.__ready = this.__open(url)
+                .then((info) => {
+                    this.__nativeId = info.id;
+                    this.videoWidth = info.width;
+                    this.videoHeight = info.height;
+                    this.duration = info.duration > 0 ? info.duration : NaN;
+                    this.__networkState = 1;
+                    this.__dataFired = false;
+                    this.__fire("loadedmetadata");
+                    this.__startReadyTimer();
+                    return info;
+                })
+                .catch((error) => {
+                    this.__networkState = 3;
+                    this.error = { code: 4, message: String((error && error.message) || error) };
+                    throw error;
+                });
+            return this.__ready;
+        }
+
+        __open(url) {
+            if (!native.video) return Promise.reject(new Error("video playback is not available"));
+            const relative = isBundleAsset(url);
+            if (relative && typeof native.video.openAsset === "function") {
+                const info = native.video.openAsset(url);
+                if (info) return Promise.resolve(info);
+            }
+            return fetchResource(url)
+                .then((response) => response.arrayBuffer())
+                .then((bytes) => {
+                    const info = native.video.open(bytesView(bytes));
+                    if (!info) throw new Error("unsupported video: " + url);
+                    this.__audio.__adoptBytes(bytes).catch(() => {});
+                    return info;
+                });
+        }
+
+        __startReadyTimer() {
+            if (this.__readyTimer) return;
+            this.__checkFrame();
+            this.__readyTimer = setIntervalFn(() => this.__checkFrame(), 100);
+        }
+
+        __stopReadyTimer() {
+            if (!this.__readyTimer) return;
+            clearTimer(this.__readyTimer);
+            this.__readyTimer = 0;
+        }
+
+        __checkFrame() {
+            if (!this.__nativeId) return;
+            if (!this.__dataFired && this.readyState >= 2) {
+                this.__dataFired = true;
+                this.__fire("loadeddata");
+                this.__fire("canplay");
+            }
+            if (this.__seekPending && this.readyState >= 2) {
+                this.__seekPending = false;
+                this.__fire("timeupdate");
+                this.__fire("seeked");
+            }
+            if (this.__dataFired && !this.__seekPending) this.__stopReadyTimer();
+        }
+
+        __startTicking() {
+            if (this.__timer) return;
+            this.__tick();
+            this.__timer = setIntervalFn(() => this.__tick(), 250);
+        }
+
+        __stopTicking() {
+            if (!this.__timer) return;
+            clearTimer(this.__timer);
+            this.__timer = 0;
+        }
+
+        __tick() {
+            if (this.paused) return;
+            this.__checkFrame();
+            this.__fire("timeupdate");
+            if (
+                !this.__loop
+                && Number.isFinite(this.duration)
+                && this.currentTime >= this.duration
+            ) {
+                this.__base = this.duration;
+                this.paused = true;
+                this.ended = true;
+                this.__stopTicking();
+                this.__audio.pause();
+                this.__fire("ended");
+            }
+        }
+
+        __fire(type) {
+            const event = makeEvent(type, {});
+            event.target = this;
+            try {
+                const handler = this["on" + type];
+                if (typeof handler === "function") handler(event);
+            } catch (error) {
+                reportError(error);
+            }
+            this.__listeners.emit(event);
         }
     }
 
@@ -2937,6 +3288,7 @@
         createElement(tag) {
             const name = String(tag).toLowerCase();
             if (name === "canvas") return registerElement(new HTMLCanvasElement());
+            if (name === "video") return registerElement(new HTMLVideoElement());
             if (name === "input") return registerElement(new HTMLInputElement(name));
             if (name === "textarea") return registerElement(new HTMLTextAreaElement(name));
             if (name === "form") return registerElement(new HTMLFormElement(name));
@@ -3699,6 +4051,7 @@
     });
     define("FontFace", FontFace);
     global.Audio = HTMLAudioElement;
+    global.HTMLVideoElement = HTMLVideoElement;
     define("AudioBuffer", AudioBuffer);
     define("AudioContext", AudioContext);
     define("AudioNode", AudioNode);

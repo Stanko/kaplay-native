@@ -148,7 +148,7 @@ impl Engine {
 
 struct DecodeJob {
     request: u32,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
 }
 
 fn spawn_decode_workers(shared: &Arc<Shared>) -> Option<Sender<DecodeJob>> {
@@ -278,7 +278,7 @@ impl Audio {
         self.shared.engine.take_events()
     }
 
-    pub fn decode_async(&self, request: u32, bytes: Vec<u8>) {
+    pub fn decode_async(&self, request: u32, bytes: Arc<[u8]>) {
         let job = DecodeJob { request, bytes };
         if let Some(sender) = &self.decode {
             if let Err(error) = sender.send(job) {
