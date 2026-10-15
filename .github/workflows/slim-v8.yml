@@ -81,5 +81,6 @@ jobs:
           cp target/slim-v8/librusty_v8.a "$asset"
           gh release view "$tag" >/dev/null 2>&1 ||
             gh release create "$tag" --title "Slim V8 $version" \
-              --notes "V8 $version without i18n, WebAssembly and Temporal, built for the kaplay-native v8 hosts."
+              --notes "V8 $version without i18n, WebAssembly and Temporal, built for the kaplay-native v8 hosts." ||
+            echo "the $tag release already exists"
           gh release upload "$tag" "$asset" --clobber

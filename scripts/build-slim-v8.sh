@@ -76,6 +76,10 @@ if [ -z "${LIBCLANG_PATH:-}" ] || [ -z "${CLANG_BASE_PATH:-}" ]; then
     export CLANG_BASE_PATH=${CLANG_BASE_PATH:-$LLVM_DIR}
 fi
 
+if [ -n "${CLANG_BASE_PATH:-}" ] && [ -z "${RUSTY_V8_BINDGEN_RESOURCE_DIR:-}" ]; then
+    export RUSTY_V8_BINDGEN_RESOURCE_DIR=$("$CLANG_BASE_PATH/bin/clang" -print-resource-dir)
+fi
+
 export NUM_JOBS=$JOBS
 export V8_FROM_SOURCE=1
 export GN_ARGS="${GN_ARGS:+$GN_ARGS }v8_enable_i18n_support=false v8_enable_webassembly=false v8_enable_temporal_support=false use_glib=false"
