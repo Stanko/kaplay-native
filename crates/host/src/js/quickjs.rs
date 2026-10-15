@@ -459,6 +459,37 @@ mod tests {
     }
 
     #[test]
+    fn file_entries_resolve_their_own_imports() {
+        let dir = fixture(
+            "file-entry",
+            &[
+                ("game/main.js", ""),
+                ("game/lib/chunk.js", "export const value = 3;"),
+            ],
+        );
+        let runtime = Runtime::new().unwrap();
+        runtime.set_loader(
+            AssetResolver,
+            AssetLoader::new(Rc::new(AssetSource::from_dir(&dir))),
+        );
+        let context = Context::full(&runtime).unwrap();
+        let entry = dir.join("game/main.js");
+        evaluate_module(
+            &context,
+            &entry.to_string_lossy(),
+            "import { value } from './lib/chunk.js'; globalThis.file = value; globalThis.self = import.meta.url;",
+        )
+        .unwrap();
+        context.with(|ctx| {
+            let value: i32 = ctx.eval("globalThis.file").unwrap();
+            assert_eq!(value, 3);
+            let url: String = ctx.eval("globalThis.self").unwrap();
+            assert_eq!(url, format!("file://{}", entry.display()));
+        });
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn top_level_await_rejections_are_reported() {
         with_fixture("top-level-await", &[("entry.js", "")], |context| {
             let error = evaluate_module(
