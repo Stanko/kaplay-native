@@ -28,6 +28,14 @@ GitHub release that matches the CLI version and caches it:
 Overrides: `--host <path>`, `KAPLAY_NATIVE_HOST`, and `KAPLAY_NATIVE_CACHE`.
 `kaplay-native doctor` prints which host was resolved and where it came from.
 
+Each release ships two host flavors per platform: the default QuickJS binary
+(`kaplay-native-host-<platform>`) and the V8 binary
+(`kaplay-native-host-<platform>-v8`). On Linux the V8 host links against the
+slim archive published by the `Slim V8` workflow and adds ~20 MB; other
+platforms currently use the prebuilt archive and add ~40 MB. The CLI downloads
+the default one unless the command asks for V8 with `--js-engine v8`, so a game
+built for the default engine never carries the V8 runtime.
+
 ## Pack a game
 
 ```sh
@@ -42,11 +50,15 @@ Options that change what the game does when launched:
 
 | Flag | Effect |
 | --- | --- |
-| `--js-engine quickjs\|v8` | Default engine for this binary |
+| `--js-engine quickjs\|v8` | Engine and host flavor for this binary |
 | `--title <name>` | Window title |
 | `--window <WxH>` | Initial window size |
 | `--allow-network` | Enable HTTP and WebSocket requests |
 | `--url <url>` | Page URL for `window.location` and relative requests |
+
+`--js-engine v8` also selects the V8 host flavor when the CLI downloads one.
+The result contains only that engine, so a QuickJS-packed game cannot switch to
+V8 at runtime; pack with `--js-engine v8` to ship V8.
 
 Everything else (`--host`, `--out`, `--entry`, `--web-dist`, `--pak`) controls
 packaging itself. Pack from an existing archive with `--pak game.pak`.
@@ -151,16 +163,27 @@ kaplay-native pack ./my-game --host hosts/kaplay-native-host-windows-x64.exe \
 
 ## Releasing the toolchain
 
-Tag the repository and the release workflow builds the host for Linux x64 and
-arm64, macOS x64 and arm64, and Windows x64, runs a packed-game smoke test on
-each platform, and attaches the binaries to the GitHub release:
+Merging to `main` releases the next version. The `Publish` workflow uses the
+version already in `cli/package.json` when a pull request set one, otherwise it
+bumps the prerelease or patch number, updates the Cargo workspace version and
+`Cargo.lock` with it, pushes the `v<version>` tag, and dispatches the release
+workflow. That workflow builds the QuickJS and V8 host for Linux x64 and arm64,
+macOS x64 and arm64, and Windows x64, runs a packed-game smoke test (V8 flavor)
+on each platform, and attaches the binaries to the GitHub release:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The same workflow publishes `cli/` to npm when the `NPM_TOKEN` secret is set,
-and skips publishing otherwise. The CLI downloads hosts by its own package
-version, so the npm version must match the release tag; the workflow rewrites
-it from the tag before publishing. Keep the Cargo workspace version in sync for
-`kaplay-native-host --version`.
+Tags can still be pushed by hand this way; the `Publish` workflow only
+automates the bump and tag. It needs an `NPM_TOKEN` repository secret (an npm
+automation token with publish rights for `kaplay-native`), which the release
+workflow uses to publish `cli/`. Without the secret the hosts are still built
+and released, and npm publishing is skipped. The npm version always matches the
+tag because the release workflow rewrites `cli/package.json` from the tag
+before publishing.
+
+Linux V8 hosts link against the slim archive published by the `Slim V8`
+workflow when a `slim-v8-<version>` release exists, and fall back to the
+prebuilt V8 archive otherwise. Run `Slim V8` once after upgrading the `v8`
+crate; it smoke-tests the archive against QuickJS before publishing it.

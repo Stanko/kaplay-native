@@ -1,0 +1,86 @@
+name: Slim V8
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/slim-v8.yml
+      - scripts/build-slim-v8.sh
+
+permissions:
+  contents: write
+
+jobs:
+  archive:
+    name: Slim V8 (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libxkbcommon-x11-0 \
+            xvfb unzip zstd lld
+      - name: Restore the toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/kaplay-native
+          key: slim-v8-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-slim-v8.sh') }}
+      - name: Restore the slim archive
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: target/slim-v8
+          key: slim-v8-${{ hashFiles('Cargo.lock') }}-${{ matrix.target }}
+      - name: Build the slim archive and host
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/build-slim-v8.sh
+      - name: Smoke the slim host against QuickJS
+        run: |
+          set -euo pipefail
+          if [ ! -x target/release/kaplay-native-host ]; then
+            RUSTY_V8_ARCHIVE="$PWD/target/slim-v8/librusty_v8.a" \
+              cargo build --release -p kaplay-native-host --no-default-features --features v8
+          fi
+          cp target/release/kaplay-native-host /tmp/slim-v8-host
+          cargo build --release -p kaplay-native-host
+          export LIBGL_ALWAYS_SOFTWARE=1
+          xvfb-run -a target/release/kaplay-native-host \
+            --script examples/smoke/main.js --dir examples/smoke \
+            --window 320x240 --frames 5 --no-steam --no-audio \
+            --screenshot-raw quickjs.rgba
+          xvfb-run -a /tmp/slim-v8-host \
+            --script examples/smoke/main.js --dir examples/smoke \
+            --window 320x240 --frames 5 --no-steam --no-audio \
+            --js-engine v8 --screenshot-raw v8.rgba
+          cmp quickjs.rgba v8.rgba
+          node scripts/check-frame.mjs v8.rgba 320 240
+      - name: Publish the archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^name = "v8"$/{n;s/^version = "\(.*\)"$/\1/p;q}' Cargo.lock)
+          tag=slim-v8-$version
+          asset=librusty_v8_slim_${version}_${{ matrix.target }}.a
+          cp target/slim-v8/librusty_v8.a "$asset"
+          gh release view "$tag" >/dev/null 2>&1 ||
+            gh release create "$tag" --title "Slim V8 $version" \
+              --notes "V8 $version without i18n, WebAssembly and Temporal, built for the kaplay-native v8 hosts." ||
+            echo "the $tag release already exists"
+          gh release upload "$tag" "$asset" --clobber

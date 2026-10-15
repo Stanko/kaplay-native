@@ -106,7 +106,8 @@ this, promise continuations never run and asset loading stalls at its first
 The `kaplay-native-net` crate owns every socket. The host thread never blocks on
 I/O:
 
-- a small pool of worker threads performs HTTP requests with `ureq`;
+- a small pool of worker threads performs HTTP requests with `ureq`, sharing
+  one agent so connections and TLS sessions are reused;
 - each WebSocket gets its own thread with a 20 ms read timeout, so outgoing
   frames are written promptly while incoming frames are polled and forwarded;
 - workers report `NetworkEvent`s through a channel that the frame loop drains.
@@ -126,9 +127,9 @@ shim rejects immediately with a `TypeError`.
 
 `kaplay-native-audio` decodes and mixes every sound:
 
-- **Decoding** runs on a worker thread per request. Files are identified by
+- **Decoding** runs on a bounded pool of worker threads. Files are identified by
   content: Ogg Opus streams go to `opus-pure`, and everything else (WAV, MP3,
-  FLAC, Ogg Vorbis, MP4/AAC) goes to `symphonia`. Decoded samples are stored as
+  FLAC, Ogg Vorbis) goes to `symphonia`. Decoded samples are stored as
   interleaved `f32` in the buffer registry. The shim gets a callback when the
   decode finishes and pulls buffer metadata through `audio.bufferInfo`.
 - **Mixing** runs on the output thread. A voice is a buffer plus a position,
@@ -139,8 +140,9 @@ shim rejects immediately with a `TypeError`.
 - **Output** is ALSA (loaded dynamically, so no build-time dependency) on Linux,
   WASAPI through `cpal` on Windows, and CoreAudio through `cpal` on macOS. The
   output format is negotiated once; if the device cannot be opened, the host
-  logs a warning and starts a silent backend that still advances the clock and
-  finishes voices, so game logic is identical with or without hardware.
+  logs a warning and switches to silent mode, where the mixer clock is caught
+  up to wall time from the frame loop instead of a render thread, so game logic
+  is identical with or without hardware.
 - **The clock** is the number of frames the mixer has rendered, exposed to the
   shim as `AudioContext.currentTime`. Parameter ramps are evaluated in the shim
   on every frame and pushed to native voices, which keeps scheduling logic in

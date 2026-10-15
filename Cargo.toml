@@ -21,33 +21,29 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 cpal = "0.18"
 dirs = "6"
-env_logger = "0.11"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
 fontdb = "0.24"
 glow = "0.18"
 glutin = "0.32"
 glutin-winit = "0.5"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 libloading = "0.8"
 log = "0.4"
 opus-pure = "0.2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 symphonia = { version = "0.6", default-features = false, features = [
     "opt-simd",
-    "all-meta",
-    "adpcm",
     "flac",
     "ogg",
     "pcm",
     "vorbis",
     "wav",
     "mp3",
-    "isomp4",
-    "aac",
 ] }
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 ureq = { version = "3", features = ["gzip"] }
 png = "0.18"
-rquickjs = { version = "0.14", features = ["full", "classes", "array-buffer", "bytes"] }
+rquickjs = { version = "0.14", default-features = false, features = ["std", "array-buffer"] }
 v8 = { version = "=152.2.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -55,8 +51,10 @@ thiserror = "2"
 tiny-skia = "0.12"
 ttf-parser = "0.25"
 winit = { version = "0.30", features = ["x11", "wayland"] }
-zip = "9"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -21,7 +22,8 @@ pub enum PakError {
 #[derive(Debug, Clone)]
 pub struct AssetSource {
     root: PathBuf,
-    files: HashMap<String, Vec<u8>>,
+    canonical_root: Option<PathBuf>,
+    files: HashMap<String, Arc<[u8]>>,
     directory: bool,
 }
 
@@ -57,11 +59,12 @@ impl AssetSource {
                     path: PathBuf::new(),
                     source,
                 })?;
-            files.insert(name, data);
+            files.insert(name, Arc::from(data));
         }
 
         Ok(Self {
             root: PathBuf::new(),
+            canonical_root: None,
             files,
             directory: false,
         })
@@ -70,6 +73,7 @@ impl AssetSource {
     pub fn from_dir(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
+            canonical_root: root.canonicalize().ok(),
             files: HashMap::new(),
             directory: true,
         }
@@ -84,17 +88,30 @@ impl AssetSource {
             return false;
         };
         if self.directory {
-            resolve_within(&self.root, &key).is_some_and(|path| path.is_file())
+            resolve_within(&self.root, self.canonical_root.as_deref(), &key)
+                .is_some_and(|path| path.is_file())
         } else {
             self.files.contains_key(&key)
         }
     }
 
-    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+    pub fn size(&self, path: &str) -> Option<usize> {
         let key = normalize(path)?;
         if self.directory {
-            let full = resolve_within(&self.root, &key)?;
-            std::fs::read(full).ok()
+            let full = resolve_within(&self.root, self.canonical_root.as_deref(), &key)?;
+            std::fs::metadata(full)
+                .ok()
+                .map(|metadata| metadata.len() as usize)
+        } else {
+            self.files.get(&key).map(|bytes| bytes.len())
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Option<Arc<[u8]>> {
+        let key = normalize(path)?;
+        if self.directory {
+            let full = resolve_within(&self.root, self.canonical_root.as_deref(), &key)?;
+            std::fs::read(full).ok().map(Arc::from)
         } else {
             self.files.get(&key).cloned()
         }
@@ -102,7 +119,7 @@ impl AssetSource {
 
     pub fn read_text(&self, path: &str) -> Option<String> {
         self.read(path)
-            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
     }
 
     pub fn file_count(&self) -> usize {
@@ -131,11 +148,11 @@ pub fn normalize(path: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-fn resolve_within(root: &Path, relative: &str) -> Option<PathBuf> {
+fn resolve_within(root: &Path, canonical_root: Option<&Path>, relative: &str) -> Option<PathBuf> {
+    let canonical_root = canonical_root?;
     let candidate = root.join(relative);
-    let root = root.canonicalize().ok()?;
     let canonical = candidate.canonicalize().ok()?;
-    canonical.starts_with(&root).then_some(canonical)
+    canonical.starts_with(canonical_root).then_some(canonical)
 }
 
 #[cfg(test)]
@@ -165,7 +182,7 @@ mod tests {
 
         let assets = AssetSource::from_dir(&dir);
         assert!(assets.is_directory());
-        assert_eq!(assets.read("sprites/bean.png").unwrap(), b"png");
+        assert_eq!(&*assets.read("sprites/bean.png").unwrap(), b"png");
         assert_eq!(assets.read_text("sprites/bean.png").unwrap(), "png");
         assert!(!assets.exists("nope.png"));
         assert!(assets.read("../escape.png").is_none());
@@ -191,7 +208,7 @@ mod tests {
         let assets = AssetSource::from_pak(&pak_path).unwrap();
         assert!(!assets.is_directory());
         assert_eq!(assets.file_count(), 2);
-        assert_eq!(assets.read("assets/bean.png").unwrap(), b"png");
+        assert_eq!(&*assets.read("assets/bean.png").unwrap(), b"png");
         assert!(assets.exists("game/main.js"));
         assert!(assets.read("missing.js").is_none());
 

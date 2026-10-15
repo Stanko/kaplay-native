@@ -178,10 +178,7 @@ fn install_fs<'js>(
         object.set(
             "size",
             Function::new(ctx.clone(), move |path: String| -> i32 {
-                state
-                    .assets
-                    .read(&path)
-                    .map_or(-1, |bytes| bytes.len() as i32)
+                state.assets.size(&path).map_or(-1, |size| size as i32)
             })?,
         )?;
     }
@@ -1411,10 +1408,7 @@ fn install_gl<'js>(
                   ty: u32,
                   pixels: Option<TypedArray<u8>>| {
                 let options = state.gl.borrow().upload_options();
-                let owned = pixels
-                    .as_ref()
-                    .and_then(|array| slice_u8(array))
-                    .map(<[u8]>::to_vec);
+                let source = pixels.as_ref().and_then(slice_u8);
                 state.gl.borrow_mut().tex_image_2d(
                     target,
                     0,
@@ -1424,7 +1418,7 @@ fn install_gl<'js>(
                     0,
                     format,
                     ty,
-                    owned.as_deref(),
+                    source,
                     options,
                 );
             }
@@ -1444,7 +1438,6 @@ fn install_gl<'js>(
                 let Some(bytes) = slice_u8(&pixels) else {
                     return;
                 };
-                let bytes = bytes.to_vec();
                 let height = if width > 0 {
                     (bytes.len() as i32 / (width * 4)).max(1)
                 } else {
@@ -1454,7 +1447,7 @@ fn install_gl<'js>(
                 state
                     .gl
                     .borrow_mut()
-                    .tex_sub_image_2d(target, 0, x, y, width, height, format, ty, &bytes, options);
+                    .tex_sub_image_2d(target, 0, x, y, width, height, format, ty, bytes, options);
             }
         );
     }

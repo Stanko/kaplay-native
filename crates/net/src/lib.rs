@@ -75,12 +75,14 @@ impl Network {
         let (request_sender, request_receiver) = channel::<HttpRequest>();
         let (event_sender, event_receiver) = channel::<NetworkEvent>();
         let queue = Arc::new(Mutex::new(request_receiver));
+        let agent = Arc::new(new_agent());
         for index in 0..fetch_workers.max(1) {
             let queue = Arc::clone(&queue);
             let events = event_sender.clone();
+            let agent = Arc::clone(&agent);
             let spawned = thread::Builder::new()
                 .name(format!("kaplay-net-fetch-{index}"))
-                .spawn(move || fetch_worker(queue, events));
+                .spawn(move || fetch_worker(queue, events, agent));
             if let Err(error) = spawned {
                 log::error!("failed to start the fetch worker: {error}");
             }
@@ -147,7 +149,18 @@ impl Network {
     }
 }
 
-fn fetch_worker(queue: Arc<Mutex<Receiver<HttpRequest>>>, events: Sender<NetworkEvent>) {
+fn new_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent()
+}
+
+fn fetch_worker(
+    queue: Arc<Mutex<Receiver<HttpRequest>>>,
+    events: Sender<NetworkEvent>,
+    agent: Arc<ureq::Agent>,
+) {
     loop {
         let request = match queue.lock() {
             Ok(queue) => queue.recv(),
@@ -157,7 +170,7 @@ fn fetch_worker(queue: Arc<Mutex<Receiver<HttpRequest>>>, events: Sender<Network
             return;
         };
         let id = request.id;
-        let event = match perform_fetch(request) {
+        let event = match perform_fetch(&agent, request) {
             Ok(response) => NetworkEvent::Response(response),
             Err(error) => NetworkEvent::FetchError {
                 id,
@@ -170,11 +183,7 @@ fn fetch_worker(queue: Arc<Mutex<Receiver<HttpRequest>>>, events: Sender<Network
     }
 }
 
-fn perform_fetch(request: HttpRequest) -> Result<HttpResponse, FetchError> {
-    let agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .build()
-        .new_agent();
+fn perform_fetch(agent: &ureq::Agent, request: HttpRequest) -> Result<HttpResponse, FetchError> {
     let mut builder = ureq::http::Request::builder()
         .method(request.method.as_str())
         .uri(request.url.as_str());

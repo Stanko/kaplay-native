@@ -1,0 +1,93 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the next version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Skip release commits
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(git log -1 --pretty=%s)" == "chore: release v"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bump the version when it is already tagged
+        id: bump
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          git checkout -B release origin/main
+          version=$(node -p "require('./cli/package.json').version")
+          if ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "cli/package.json already names an unreleased version: $version"
+          else
+            version=$(node -e '
+              const fs = require("fs");
+              const cli = JSON.parse(fs.readFileSync("cli/package.json", "utf8"));
+              const [core, pre] = cli.version.split("-", 2);
+              const [major, minor, patch] = core.split(".").map(Number);
+              let next;
+              if (pre) {
+                const parts = pre.split(".");
+                next = `${major}.${minor}.${patch}-${parts[0]}.${Number(parts[1] || 0) + 1}`;
+              } else {
+                next = `${major}.${minor}.${patch + 1}`;
+              }
+              cli.version = next;
+              fs.writeFileSync("cli/package.json", JSON.stringify(cli, null, 4) + "\n");
+              const cargo = fs.readFileSync("Cargo.toml", "utf8");
+              fs.writeFileSync(
+                "Cargo.toml",
+                cargo.replace(/^(\[workspace\.package\]\nversion = ")[^"]+(")/m, `$1${next}$2`),
+              );
+              console.log(next);
+            ')
+            cargo update --workspace --quiet
+            echo "bumped to $version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Commit, tag and push
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cli/package.json Cargo.toml Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: release v${{ steps.bump.outputs.version }}"
+            git push origin "HEAD:main"
+          fi
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin "v${{ steps.bump.outputs.version }}"
+      - name: Start the release builds
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --ref "v${{ steps.bump.outputs.version }}"
