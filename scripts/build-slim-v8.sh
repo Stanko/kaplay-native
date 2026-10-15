@@ -60,13 +60,15 @@ if [ -z "${LIBCLANG_PATH:-}" ] || [ -z "${CLANG_BASE_PATH:-}" ]; then
                 "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/LLVM-$LLVM_VERSION-$LLVM_ASSET.tar.zst"
             zstd -d --long=30 -c "$CACHE/llvm.tar.zst" |
                 tar -x -C "$LLVM_DIR" --strip-components=1 --wildcards \
-                    '*/lib/*' '*/bin/clang' '*/bin/clang++' "*/bin/clang-$LLVM_MAJOR"
+                    '*/lib/*' '*/bin/clang' '*/bin/clang++' "*/bin/clang-$LLVM_MAJOR" \
+                    '*/bin/llvm-*' '*/bin/lld' '*/bin/ld.lld'
             rm -f "$CACHE/llvm.tar.zst"
         else
             curl -fsSL -o "$CACHE/llvm.tar.xz" \
                 "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/LLVM-$LLVM_VERSION-$LLVM_ASSET.tar.xz"
             tar -xJf "$CACHE/llvm.tar.xz" -C "$LLVM_DIR" --strip-components=1 --wildcards \
-                '*/lib/*' '*/bin/clang' '*/bin/clang++' "*/bin/clang-$LLVM_MAJOR"
+                '*/lib/*' '*/bin/clang' '*/bin/clang++' "*/bin/clang-$LLVM_MAJOR" \
+                '*/bin/llvm-*' '*/bin/lld' '*/bin/ld.lld'
             rm -f "$CACHE/llvm.tar.xz"
         fi
     fi
