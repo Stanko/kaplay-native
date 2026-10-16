@@ -1,0 +1,387 @@
+{
+  "created": "2026-10-16T10:11:41.206Z",
+  "platform": "linux-x64",
+  "engines": {
+    "quickjs": {
+      "renderer": "AMD Radeon Graphics (radeonsi, renoir, ACO, DRM 3.64, 7.1.5-76070105-generic) (AMD, OpenGL 4.6 (Compatibility Profile) Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea)",
+      "integrated": {
+        "duration_s": 2.646910819,
+        "engine": "quickjs",
+        "fps": 340.01901142253786,
+        "frame_ms": {
+          "avg": 2.749095916748047,
+          "p50": 2.611521005630493,
+          "p99": 3.9025440216064453,
+          "samples": 900
+        },
+        "frames": 900,
+        "phases_ms": {
+          "audio": {
+            "avg": 0.003928118385374546,
+            "p50": 0.0034229999873787165,
+            "p99": 0.008940000087022781,
+            "samples": 900
+          },
+          "drain": {
+            "avg": 0.003930235747247934,
+            "p50": 0.003421999979764223,
+            "p99": 0.006705000065267086,
+            "samples": 900
+          },
+          "js": {
+            "avg": 2.3651835918426514,
+            "p50": 2.2543511390686035,
+            "p99": 3.396332025527954,
+            "samples": 900
+          },
+          "network": {
+            "avg": 0.012254379689693451,
+            "p50": 0.001955999992787838,
+            "p99": 0.0053079999051988125,
+            "samples": 900
+          },
+          "present": {
+            "avg": 0.23745866119861603,
+            "p50": 0.2128780037164688,
+            "p99": 0.9494280219078064,
+            "samples": 900
+          }
+        },
+        "renderer": "AMD Radeon Graphics (radeonsi, renoir, ACO, DRM 3.64, 7.1.5-76070105-generic)"
+      },
+      "frax": {
+        "duration_s": 4.263449832,
+        "engine": "quickjs",
+        "fps": 211.0966553997908,
+        "frame_ms": {
+          "avg": 4.4114861488342285,
+          "p50": 0.22258500754833221,
+          "p99": 9.699545860290527,
+          "samples": 900
+        },
+        "frames": 900,
+        "phases_ms": {
+          "audio": {
+            "avg": 0.0029400880448520184,
+            "p50": 0.002862999914214015,
+            "p99": 0.0053079999051988125,
+            "samples": 900
+          },
+          "drain": {
+            "avg": 3.3672399520874023,
+            "p50": 0.0027940000873059034,
+            "p99": 0.004748999606817961,
+            "samples": 900
+          },
+          "js": {
+            "avg": 0.7213099598884583,
+            "p50": 0.011594000272452831,
+            "p99": 9.069293975830078,
+            "samples": 900
+          },
+          "network": {
+            "avg": 0.0013087564148008823,
+            "p50": 0.0013970000436529517,
+            "p99": 0.001955999992787838,
+            "samples": 900
+          },
+          "present": {
+            "avg": 0.23697851598262787,
+            "p50": 0.11698500066995621,
+            "p99": 1.8830020427703857,
+            "samples": 900
+          }
+        },
+        "renderer": "AMD Radeon Graphics (radeonsi, renoir, ACO, DRM 3.64, 7.1.5-76070105-generic)"
+      },
+      "checks": {
+        "gl.version": "0",
+        "video.width": "160",
+        "video.height": "120",
+        "audio.bytes": "9330",
+        "net.fetch_bytes": "65536",
+        "net.fetch_checksum": "1864400896",
+        "audio.frames": "32000",
+        "audio.sample_rate": "48000",
+        "audio.channels": "2",
+        "net.ws_echo": "3473463202",
+        "canvas.text_checksum": "1829680993",
+        "canvas.metrics": "202",
+        "canvas.sprite_checksum": "2210593179",
+        "canvas.small_checksum": "2164650572",
+        "gl.error": "0"
+      },
+      "info": {
+        "frames": "900",
+        "video.uploads": "898",
+        "js_frame_ms": "2.3296"
+      }
+    }
+  },
+  "criterion": {
+    "audio_decode/sounds_fx_03_Claw_03.opus": {
+      "unit": "ns",
+      "value": 1645732.7392156862
+    },
+    "audio_decode/sounds_music_Forest.ogg": {
+      "unit": "ns",
+      "value": 49360848.5
+    },
+    "audio_decode/sounds_music_title.opus": {
+      "unit": "ns",
+      "value": 32271399.25
+    },
+    "audio_decode/synthetic-wav-1s-mono": {
+      "unit": "ns",
+      "value": 228170.3183838384
+    },
+    "audio_mixer_render/0": {
+      "unit": "ns",
+      "value": 37.61859044719867
+    },
+    "audio_mixer_render/1": {
+      "unit": "ns",
+      "value": 3285.8315496098103
+    },
+    "audio_mixer_render/128": {
+      "unit": "ns",
+      "value": 404464.7304585412
+    },
+    "audio_mixer_render/32": {
+      "unit": "ns",
+      "value": 106769.96403823179
+    },
+    "audio_mixer_render/8": {
+      "unit": "ns",
+      "value": 25243.706086059537
+    },
+    "audio_mixer_voice-cycle": {
+      "unit": "ns",
+      "value": 57.319635736496906
+    },
+    "canvas2d_clear_rect/16x16": {
+      "unit": "ns",
+      "value": 1155.3218524784165
+    },
+    "canvas2d_clear_rect/960x540": {
+      "unit": "ns",
+      "value": 1438646.2476190478
+    },
+    "canvas2d_create-canvas": {
+      "unit": "ns",
+      "value": 2426.73173826988
+    },
+    "canvas2d_draw_image/alpha/256": {
+      "unit": "ns",
+      "value": 493925.4898809524
+    },
+    "canvas2d_draw_image/alpha/512": {
+      "unit": "ns",
+      "value": 2053756.9
+    },
+    "canvas2d_draw_image/alpha/64": {
+      "unit": "ns",
+      "value": 30554.62154882155
+    },
+    "canvas2d_draw_image/opaque/256": {
+      "unit": "ns",
+      "value": 379964.0065407371
+    },
+    "canvas2d_draw_image/opaque/512": {
+      "unit": "ns",
+      "value": 1576097.9971590908
+    },
+    "canvas2d_draw_image/opaque/64": {
+      "unit": "ns",
+      "value": 23575.819871106338
+    },
+    "canvas2d_draw_image_from_canvas": {
+      "unit": "ns",
+      "value": 520438.1836080586
+    },
+    "canvas2d_pixels/get_image_data_256": {
+      "unit": "ns",
+      "value": 37630.299278846156
+    },
+    "canvas2d_pixels/get_image_data_full": {
+      "unit": "ns",
+      "value": 501687.54903694964
+    },
+    "canvas2d_pixels/put_image_data_full": {
+      "unit": "ns",
+      "value": 1600746.7692307692
+    },
+    "canvas2d_pixels/to_png_full": {
+      "unit": "ns",
+      "value": 8543211.083333332
+    },
+    "canvas2d_text/fill_text_long": {
+      "unit": "ns",
+      "value": 858055.5416666667
+    },
+    "canvas2d_text/fill_text_short": {
+      "unit": "ns",
+      "value": 201102.6729229229
+    },
+    "canvas2d_text/measure_text_long": {
+      "unit": "ns",
+      "value": 45519.814962121214
+    },
+    "canvas2d_text/measure_text_short": {
+      "unit": "ns",
+      "value": 36201.65082810448
+    },
+    "canvas2d_text/stroke_text_long": {
+      "unit": "ns",
+      "value": 1818982.326923077
+    },
+    "net_http_roundtrip/262144": {
+      "unit": "ns",
+      "value": 388993.2650360392
+    },
+    "net_http_roundtrip/4096": {
+      "unit": "ns",
+      "value": 187623.79015151516
+    },
+    "net_http_roundtrip/65536": {
+      "unit": "ns",
+      "value": 232166.15333333332
+    },
+    "net_http_submit": {
+      "unit": "ns",
+      "value": 192.28643694272424
+    },
+    "net_ws/echo-batch-64": {
+      "unit": "ns",
+      "value": 688762.9385074147
+    },
+    "net_ws/echo-roundtrip": {
+      "unit": "ns",
+      "value": 104133.99166666667
+    },
+    "pak_lookup/exists-hit": {
+      "unit": "ns",
+      "value": 136.45770665649977
+    },
+    "pak_lookup/exists-miss": {
+      "unit": "ns",
+      "value": 111.14368782050245
+    },
+    "pak_lookup/size-hit": {
+      "unit": "ns",
+      "value": 140.5087030010236
+    },
+    "pak_normalize": {
+      "unit": "ns",
+      "value": 158.43592034229746
+    },
+    "pak_open/frax": {
+      "unit": "ns",
+      "value": 3817864.0714285714
+    },
+    "pak_open_synthetic-512x4k/deflate": {
+      "unit": "ns",
+      "value": 201824.95571428572
+    },
+    "pak_open_synthetic-512x4k/store": {
+      "unit": "ns",
+      "value": 871204.404597701
+    },
+    "pak_read/cached": {
+      "unit": "ns",
+      "value": 154.26740707463767
+    },
+    "pak_read/decompress": {
+      "unit": "ns",
+      "value": 331236.55000000005
+    },
+    "video/decode-30fps": {
+      "unit": "ns",
+      "value": 6641669.785714285
+    },
+    "video/frame_at_copy": {
+      "unit": "ns",
+      "value": 317.18643934959783
+    },
+    "video/frame_ready": {
+      "unit": "ns",
+      "value": 310.7139408385283
+    },
+    "video/open": {
+      "unit": "ns",
+      "value": 110502.06241319445
+    }
+  },
+  "gfx": {
+    "renderer": "AMD Radeon Graphics (radeonsi, renoir, ACO, DRM 3.64, 7.1.5-76070105-generic)",
+    "metrics": {
+      "texture_upload/512": {
+        "unit": "ns",
+        "value": 62282.4,
+        "gib_per_s": 15.68,
+        "bytes_per_op": 1048576
+      },
+      "tex_sub_image_2d/512": {
+        "unit": "ns",
+        "value": 49017.2,
+        "gib_per_s": 19.923,
+        "bytes_per_op": 1048576
+      },
+      "buffer_data/64k": {
+        "unit": "ns",
+        "value": 3255.6,
+        "gib_per_s": 18.748,
+        "bytes_per_op": 65536
+      },
+      "buffer_sub_data/64k": {
+        "unit": "ns",
+        "value": 2891.3,
+        "gib_per_s": 21.11,
+        "bytes_per_op": 65536
+      },
+      "draw_arrays/4-verts": {
+        "unit": "ns",
+        "value": 2806.8,
+        "gib_per_s": 0,
+        "bytes_per_op": 0
+      },
+      "state/bind-texture": {
+        "unit": "ns",
+        "value": 1106.1,
+        "gib_per_s": 0,
+        "bytes_per_op": 0
+      },
+      "state/blend-func": {
+        "unit": "ns",
+        "value": 26.7,
+        "gib_per_s": 0,
+        "bytes_per_op": 0
+      },
+      "state/viewport": {
+        "unit": "ns",
+        "value": 106.3,
+        "gib_per_s": 0,
+        "bytes_per_op": 0
+      },
+      "clear/1280x720": {
+        "unit": "ns",
+        "value": 35.3,
+        "gib_per_s": 97148.487,
+        "bytes_per_op": 3686400
+      },
+      "read_pixels/1280x720": {
+        "unit": "ns",
+        "value": 696612.9,
+        "gib_per_s": 4.928,
+        "bytes_per_op": 3686400
+      },
+      "present/1280x720": {
+        "unit": "ns",
+        "value": 1763013,
+        "gib_per_s": 1.947,
+        "bytes_per_op": 3686400
+      }
+    }
+  },
+  "baseline": true
+}

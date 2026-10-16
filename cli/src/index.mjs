@@ -92,6 +92,7 @@ Common options:
   --no-audio        Run without audio output
   --no-vsync        Disable vertical sync (uncapped frame rate)
   --stats           Log the frame rate while the game runs
+  --bench-json <p>  Write a JSON benchmark summary before exiting
   --url <url>       Page URL games see as window.location (resolves relative requests)
   --js-engine <n>   Javascript engine to run or embed (quickjs or v8)
   --x11             Prefer the X11 backend on Linux
@@ -206,6 +207,7 @@ function hostArgs(options, extra = {}) {
     if (options["no-audio"]) args.push("--no-audio");
     if (options["no-vsync"]) args.push("--no-vsync");
     if (options.stats) args.push("--stats");
+    if (options["bench-json"]) args.push("--bench-json", options["bench-json"]);
     if (options.url) args.push("--url", options.url);
     if (options["js-engine"]) args.push("--js-engine", options["js-engine"]);
     if (options.x11) args.push("--x11");

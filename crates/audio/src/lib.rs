@@ -1,7 +1,7 @@
 mod backend;
 mod buffer;
 mod decode;
-mod mixer;
+pub mod mixer;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

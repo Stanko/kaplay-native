@@ -1,6 +1,7 @@
 mod color;
 mod fonts;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub use color::Rgba;
@@ -295,10 +296,9 @@ impl Canvas2d {
             return;
         }
 
-        let mut premultiplied =
-            premultiply(image.data, image.width as usize, image.height as usize);
-        let Some(mut source) =
-            tiny_skia::PixmapMut::from_bytes(&mut premultiplied, image.width, image.height)
+        let premultiplied = premultiply(image.data, image.width as usize, image.height as usize);
+        let Some(source) =
+            tiny_skia::PixmapRef::from_bytes(&premultiplied, image.width, image.height)
         else {
             return;
         };
@@ -309,7 +309,7 @@ impl Canvas2d {
             || source_height != image.height as f32
         {
             crop_pixmap(
-                &mut source,
+                &source,
                 source_x as i32,
                 source_y as i32,
                 source_width as u32,
@@ -341,7 +341,7 @@ impl Canvas2d {
             }
             None => canvas
                 .pixmap
-                .draw_pixmap(0, 0, source.as_ref(), &paint, transform, None),
+                .draw_pixmap(0, 0, source, &paint, transform, None),
         }
     }
 
@@ -423,8 +423,17 @@ impl Canvas2d {
     }
 }
 
-fn premultiply(data: &[u8], width: usize, height: usize) -> Vec<u8> {
-    let mut output = data[..(width * height * 4).min(data.len())].to_vec();
+fn premultiply(data: &[u8], width: usize, height: usize) -> Cow<'_, [u8]> {
+    let source = &data[..(width * height * 4).min(data.len())];
+    if source
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| pixel[3] == 255)
+    {
+        return Cow::Borrowed(source);
+    }
+    let mut output = source.to_vec();
     for pixel in output.as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as u32;
         if alpha == 255 {
@@ -434,7 +443,7 @@ fn premultiply(data: &[u8], width: usize, height: usize) -> Vec<u8> {
         pixel[1] = ((pixel[1] as u32 * alpha + 127) / 255) as u8;
         pixel[2] = ((pixel[2] as u32 * alpha + 127) / 255) as u8;
     }
-    output
+    Cow::Owned(output)
 }
 
 fn unpremultiply(data: &mut [u8]) {
@@ -450,7 +459,7 @@ fn unpremultiply(data: &mut [u8]) {
 }
 
 fn crop_pixmap(
-    source: &mut tiny_skia::PixmapMut<'_>,
+    source: &tiny_skia::PixmapRef<'_>,
     x: i32,
     y: i32,
     width: u32,
@@ -475,7 +484,7 @@ fn crop_pixmap(
         let dest_offset = row as usize * width as usize * 4 + start as usize * 4;
         let source_offset = source_y as usize * source_stride + (x as i64 + start) as usize * 4;
         output.data_mut()[dest_offset..dest_offset + count * 4]
-            .copy_from_slice(&source.as_ref().data()[source_offset..source_offset + count * 4]);
+            .copy_from_slice(&source.data()[source_offset..source_offset + count * 4]);
     }
 
     Some(output)

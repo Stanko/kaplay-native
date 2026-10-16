@@ -42,6 +42,21 @@ fn percentile(sorted: &[f32], fraction: f32) -> f32 {
     sorted[index.min(sorted.len() - 1)]
 }
 
+fn sample_stats(samples: &std::collections::VecDeque<f32>) -> serde_json::Value {
+    if samples.is_empty() {
+        return json!({ "avg": 0.0, "p50": 0.0, "p99": 0.0, "samples": 0 });
+    }
+    let mut sorted: Vec<f32> = samples.iter().copied().collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let average = samples.iter().sum::<f32>() / samples.len() as f32;
+    json!({
+        "avg": average,
+        "p50": percentile(&sorted, 0.5),
+        "p99": percentile(&sorted, 0.99),
+        "samples": samples.len(),
+    })
+}
+
 pub struct HostApp {
     config: HostConfig,
     assets: Rc<AssetSource>,
@@ -50,10 +65,46 @@ pub struct HostApp {
     frames: u32,
     failed: bool,
     frame_ms: std::collections::VecDeque<f32>,
+    phases: BenchSamples,
+    renderer: Option<String>,
     started: std::time::Instant,
     stats_last: std::time::Instant,
     stats_frames: u32,
     stats_ms: f32,
+}
+
+#[derive(Default)]
+struct BenchSamples {
+    js: std::collections::VecDeque<f32>,
+    drain: std::collections::VecDeque<f32>,
+    network: std::collections::VecDeque<f32>,
+    audio: std::collections::VecDeque<f32>,
+    present: std::collections::VecDeque<f32>,
+}
+
+struct FramePhases {
+    js_ms: f32,
+    drain_ms: f32,
+    network_ms: f32,
+    audio_ms: f32,
+    present_ms: f32,
+}
+
+impl BenchSamples {
+    fn push(samples: &mut std::collections::VecDeque<f32>, value: f32) {
+        if samples.len() == FRAME_SAMPLES {
+            samples.pop_front();
+        }
+        samples.push_back(value);
+    }
+
+    fn record(&mut self, phases: FramePhases) {
+        Self::push(&mut self.js, phases.js_ms);
+        Self::push(&mut self.drain, phases.drain_ms);
+        Self::push(&mut self.network, phases.network_ms);
+        Self::push(&mut self.audio, phases.audio_ms);
+        Self::push(&mut self.present, phases.present_ms);
+    }
 }
 
 struct Inner {
@@ -261,23 +312,31 @@ impl Inner {
         );
     }
 
-    fn frame(&self) {
+    fn frame(&self) -> FramePhases {
         let size = self.window.inner_size();
         if self.last_resize.get() != (size.width, size.height) {
             self.dispatch_resize(size);
         }
+        let network_start = std::time::Instant::now();
         self.pump_network();
+        let network_ms = network_start.elapsed().as_secs_f32() * 1000.0;
+        let audio_start = std::time::Instant::now();
         self.pump_audio();
+        let audio_ms = audio_start.elapsed().as_secs_f32() * 1000.0;
         let now = self.state.now_ms();
         self.mark("frame update");
+        let js_start = std::time::Instant::now();
         let result = self
             .js
             .call_global("__kapNative_onFrame", &[JsArg::Float(now)]);
+        let js_ms = js_start.elapsed().as_secs_f32() * 1000.0;
         self.unmark();
         if let Err(error) = result {
             log::error!("frame: {error}");
         }
+        let drain_start = std::time::Instant::now();
         self.drain();
+        let drain_ms = drain_start.elapsed().as_secs_f32() * 1000.0;
 
         if let Some(api) = self.state.steam.borrow().as_ref() {
             api.run_callbacks();
@@ -299,6 +358,7 @@ impl Inner {
             );
             self.last_present.set(present_size);
         }
+        let present_start = std::time::Instant::now();
         self.state
             .gl
             .borrow_mut()
@@ -308,6 +368,13 @@ impl Inner {
                     log::error!("swap buffers: {error}");
                 }
             });
+        FramePhases {
+            js_ms,
+            drain_ms,
+            network_ms,
+            audio_ms,
+            present_ms: present_start.elapsed().as_secs_f32() * 1000.0,
+        }
     }
 }
 
@@ -395,6 +462,8 @@ impl HostApp {
             frames: 0,
             failed: false,
             frame_ms: std::collections::VecDeque::new(),
+            phases: BenchSamples::default(),
+            renderer: None,
             started: std::time::Instant::now(),
             stats_last: std::time::Instant::now(),
             stats_frames: 0,
@@ -418,6 +487,7 @@ impl HostApp {
         event_loop.set_control_flow(ControlFlow::Poll);
         let result = event_loop.run_app(&mut self);
         self.log_frame_stats();
+        self.write_bench_json();
         if let Some(api) = self.steam.borrow_mut().as_mut() {
             api.shutdown();
         }
@@ -491,14 +561,16 @@ impl HostApp {
                 display.get_proc_address(symbol) as *const _
             })
         };
+        let renderer_name = unsafe { glow_context.get_parameter_string(glow::RENDERER) };
         unsafe {
             log::info!(
                 "renderer: {} ({}, OpenGL {})",
-                glow_context.get_parameter_string(glow::RENDERER),
+                renderer_name,
                 glow_context.get_parameter_string(glow::VENDOR),
                 glow_context.get_parameter_string(glow::VERSION)
             );
         }
+        self.renderer = Some(renderer_name);
         let mut gl = GlState::new(glow_context);
         let size = window.inner_size();
         gl.resize_drawing_buffer(size.width as i32, size.height as i32);
@@ -705,6 +777,10 @@ impl HostApp {
         }
     }
 
+    fn record_phases(&mut self, phases: FramePhases) {
+        self.phases.record(phases);
+    }
+
     fn log_frame_stats(&self) {
         if self.frame_ms.is_empty() {
             return;
@@ -721,6 +797,32 @@ impl HostApp {
             percentile(&sorted, 0.5),
             percentile(&sorted, 0.99)
         );
+    }
+
+    fn write_bench_json(&self) {
+        let Some(path) = self.config.bench_json.as_ref() else {
+            return;
+        };
+        let elapsed = self.started.elapsed().as_secs_f64();
+        let summary = json!({
+            "engine": self.config.js_engine.name(),
+            "renderer": self.renderer.clone().unwrap_or_default(),
+            "frames": self.frames,
+            "duration_s": elapsed,
+            "fps": if elapsed > 0.0 { self.frames as f64 / elapsed } else { 0.0 },
+            "frame_ms": sample_stats(&self.frame_ms),
+            "phases_ms": {
+                "js": sample_stats(&self.phases.js),
+                "drain": sample_stats(&self.phases.drain),
+                "network": sample_stats(&self.phases.network),
+                "audio": sample_stats(&self.phases.audio),
+                "present": sample_stats(&self.phases.present),
+            },
+        });
+        let bytes = serde_json::to_vec_pretty(&summary).unwrap_or_default();
+        if let Err(error) = std::fs::write(path, bytes) {
+            log::error!("bench json {}: {error}", path.display());
+        }
     }
 
     fn maybe_exit(&mut self, event_loop: &ActiveEventLoop) {
@@ -856,7 +958,8 @@ impl ApplicationHandler for HostApp {
             }
             WindowEvent::RedrawRequested => {
                 let started = std::time::Instant::now();
-                inner.frame();
+                let phases = inner.frame();
+                self.record_phases(phases);
                 self.record_frame(started.elapsed().as_secs_f32() * 1000.0);
                 self.frames += 1;
                 self.maybe_exit(event_loop);

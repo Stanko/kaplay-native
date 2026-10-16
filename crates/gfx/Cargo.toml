@@ -9,3 +9,8 @@ repository.workspace = true
 glow.workspace = true
 log.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+glutin.workspace = true
+glutin-winit.workspace = true
+winit.workspace = true

@@ -216,23 +216,53 @@ lock.
   with `splice` (a fresh array every frame) and walked every timer. It now
   swaps buffers and skips the timer map when it is empty.
 
-Remaining hot-path candidates:
+Remaining hot path candidates (numbers below are pre-optimisation Linux x64
+quickjs baseline figures; current baselines live in `benchmarks/README.md`):
 
-- `GlState::present` issues ~10 `glGet*` calls per frame to save and restore
-  state. All GL mutations funnel through `GlState`, so the values could be
-  tracked in Rust and the queries dropped.
-- `Mixer::render` reads interleaved samples through a bounds-checked accessor
-  four times per output frame and computes the pan gains per sample (fixed),
-  leaving it a good SIMD candidate.
-- `AssetSource` keeps pak entries uncompressed in memory next to the archive.
-- `canvas2d` premultiplies a copy of the source on every `drawImage`; most
-  sprites are fully opaque, so an opaque fast path avoids a full pass.
+- `Mixer::render` was voice-major rewritten: per-voice channel slices are read
+  directly instead of `read_frame` per sample (162 µs → 87 µs per 512-frame
+  block at 32 voices, ~1.8x across 32-128 voices).
+- `AssetSource` used to decompress every pak entry up front; it now indexes the
+  central directory and decompresses on first read into a cache
+  (`pak/open/frax` 11.9 ms → 3.4 ms).
+- `net`'s socket worker blocked on a 20 ms read poll, so every WebSocket send
+  waited for the next poll (`echo-roundtrip` 21.3 ms). It is now non-blocking,
+  wakes on `polling` notifications from the send path, and sets `TCP_NODELAY`
+  (21.3 ms → 0.1 ms; batch of 64 → 0.65 ms).
+- `canvas2d` premultiplies a copy of the source on every `drawImage`; opaque
+  sources are now borrowed without a copy (512² opaque 1.53 ms → 1.32 ms, and
+  no per-draw allocation). The remaining cost is the tiny-skia bilinear blit.
+- `canvas2d` text layout is rebuilt per `fillText`/`strokeText` call
+  (`fill_text_long` 793 µs, `stroke_text_long` 1.7 ms) and every glyph outline
+  is rebuilt per call; a glyph outline cache is the next candidate.
+- `GlState::present` issues ~10 `glGet*` calls per frame, but `state/*` metrics
+  put each GL call at ~0.4 µs against a 1.56 ms swap-bound `present`, so state
+  tracking was dropped as not worth the risk.
+- Audio decode is asynchronous already; long assets (`Forest.ogg` 43.8 ms)
+  occupy a worker instead of the load path.
 - Input events serialize JSON for every key/mouse event before entering the
   shim.
 - The shim re-walks the Web Audio node graph for every live voice on every
   frame (`graphParams` allocates a stack and a `Set` per voice).
 
 ## How to measure
+
+`benchmarks/README.md` documents the per-crate and integrated benchmark suites
+and the committed Linux x64 baselines. Quick loop:
+
+```sh
+node scripts/bench.mjs run     --engine quickjs --only game --no-build
+node scripts/bench.mjs compare --engine quickjs
+```
+
+`--bench-json` writes the frame-time percentiles and per-phase (js, drain,
+network, audio, present) breakdown from an integrated run:
+
+```sh
+target/release/kaplay-native-host --pak game.pak --no-vsync --bench-json bench.json --frames 600
+```
+
+Bundle size:
 
 ```sh
 cargo build --release -p kaplay-native-host
