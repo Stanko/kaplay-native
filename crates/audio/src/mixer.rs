@@ -141,74 +141,99 @@ impl Mixer {
 
     pub fn render(&mut self, out: &mut [f32], base_frame: u64) {
         out.fill(0.0);
-        let frames = out.len() / 2;
-        for frame in 0..frames {
-            let absolute = base_frame + frame as u64;
-            let mut left = 0.0f32;
-            let mut right = 0.0f32;
-            for voice in &mut self.voices {
-                if !voice.playing {
-                    continue;
-                }
-                if voice.stop_at.is_some_and(|limit| absolute >= limit) {
+        let mut rendered = false;
+        for voice in &mut self.voices {
+            if !voice.playing {
+                continue;
+            }
+            let buffer = &voice.buffer;
+            let channels = buffer.channels as usize;
+            let frames_total = buffer.frames;
+            if frames_total == 0 || voice.position >= frames_total as f64 {
+                let looping = voice.looping;
+                if looping && frames_total > 0 {
+                    voice.position %= frames_total as f64;
+                } else {
                     voice.playing = false;
+                    self.finished.push(voice.id);
                     continue;
                 }
-                if voice.start_at.is_some_and(|start| absolute < start) {
-                    continue;
-                }
-                voice.start_at = None;
+            }
 
-                let buffer = &voice.buffer;
-                let channels = buffer.channels as usize;
-                let frames_total = buffer.frames;
-                if frames_total == 0 || voice.position >= frames_total as f64 {
-                    if voice.looping && frames_total > 0 {
-                        voice.position %= frames_total as f64;
+            let samples = buffer.samples();
+            rendered = true;
+            let looping = voice.looping;
+            let left_gain = voice.gain_left * voice.gain;
+            let right_gain = voice.gain_right * voice.gain;
+            let rate = voice.rate;
+            let stop_at = voice.stop_at;
+            let end = frames_total as f64;
+            let mut position = voice.position;
+            for (frame, slot) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                let absolute = base_frame + frame as u64;
+                if let Some(start) = voice.start_at {
+                    if absolute < start {
+                        continue;
+                    }
+                    voice.start_at = None;
+                }
+                if stop_at.is_some_and(|limit| absolute >= limit) {
+                    voice.playing = false;
+                    break;
+                }
+                if position >= end {
+                    if looping {
+                        position %= end;
                     } else {
                         voice.playing = false;
                         self.finished.push(voice.id);
-                        continue;
+                        break;
                     }
                 }
 
-                let index = voice.position.floor() as usize;
-                let fraction = (voice.position - index as f64) as f32;
+                let index = position as usize;
+                let fraction = (position - index as f64) as f32;
                 let next_index = if index + 1 < frames_total {
                     index + 1
-                } else if voice.looping {
+                } else if looping {
                     0
                 } else {
                     index
                 };
                 let (sound_left, sound_right) = if channels == 1 {
-                    let a = buffer.read_frame(0, index);
-                    let b = buffer.read_frame(0, next_index);
+                    let a = samples[index];
+                    let b = samples[next_index];
                     let value = a + (b - a) * fraction;
                     (value, value)
                 } else {
-                    let a = buffer.read_frame(0, index);
-                    let b = buffer.read_frame(0, next_index);
-                    let c = buffer.read_frame(1, index);
-                    let d = buffer.read_frame(1, next_index);
+                    let base = index * channels;
+                    let next_base = next_index * channels;
+                    let a = samples[base];
+                    let b = samples[next_base];
+                    let c = samples[base + 1];
+                    let d = samples[next_base + 1];
                     (a + (b - a) * fraction, c + (d - c) * fraction)
                 };
 
-                left += sound_left * voice.gain_left * voice.gain;
-                right += sound_right * voice.gain_right * voice.gain;
+                slot[0] += sound_left * left_gain;
+                slot[1] += sound_right * right_gain;
 
-                voice.position += voice.rate;
-                if voice.position >= frames_total as f64 {
-                    if voice.looping {
-                        voice.position %= frames_total as f64;
+                position += rate;
+                if position >= end {
+                    if looping {
+                        position %= end;
                     } else {
                         voice.playing = false;
                         self.finished.push(voice.id);
                     }
                 }
             }
-            out[frame * 2] = left.clamp(-1.0, 1.0);
-            out[frame * 2 + 1] = right.clamp(-1.0, 1.0);
+            voice.position = position;
+        }
+        if rendered {
+            for sample in out.iter_mut() {
+                *sample = sample.clamp(-1.0, 1.0);
+            }
         }
         self.voices.retain(|voice| voice.playing);
     }

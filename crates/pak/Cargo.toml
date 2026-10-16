@@ -8,3 +8,10 @@ repository.workspace = true
 [dependencies]
 thiserror.workspace = true
 zip.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "pak"
+harness = false

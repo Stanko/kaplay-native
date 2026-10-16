@@ -13,9 +13,8 @@ fn open() -> Video {
 fn wait_for(video: &mut Video, time: f64) -> RgbaFrame {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let frame = video.frame_at(time).clone();
         if video.frame_ready(time) {
-            return frame;
+            return video.frame_at(time).clone();
         }
         assert!(
             Instant::now() < deadline,

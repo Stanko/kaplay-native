@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
@@ -19,11 +19,41 @@ pub enum PakError {
     UnsafeEntry(String),
 }
 
+#[derive(Debug)]
+struct Archive {
+    entries: HashMap<String, (usize, u64)>,
+    zip: Mutex<zip::ZipArchive<Cursor<Arc<[u8]>>>>,
+    cache: Mutex<HashMap<String, Arc<[u8]>>>,
+}
+
+impl Archive {
+    fn read(&self, name: &str) -> Option<Arc<[u8]>> {
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(bytes) = cache.get(name) {
+                return Some(Arc::clone(bytes));
+            }
+        }
+        let (index, _) = *self.entries.get(name)?;
+        let mut zip = self.zip.lock().ok()?;
+        let mut entry = zip.by_index(index).ok()?;
+        let mut data = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut data).ok()?;
+        drop(entry);
+        drop(zip);
+        let bytes: Arc<[u8]> = Arc::from(data);
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.insert(name.to_string(), Arc::clone(&bytes));
+        }
+        Some(bytes)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AssetSource {
     root: PathBuf,
     canonical_root: Option<PathBuf>,
     files: HashMap<String, Arc<[u8]>>,
+    archive: Option<Arc<Archive>>,
     directory: bool,
 }
 
@@ -37,11 +67,12 @@ impl AssetSource {
     }
 
     pub fn from_pak_bytes(bytes: Vec<u8>) -> Result<Self, PakError> {
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-        let mut files = HashMap::new();
+        let bytes: Arc<[u8]> = Arc::from(bytes);
+        let mut archive = zip::ZipArchive::new(Cursor::new(Arc::clone(&bytes)))?;
+        let mut entries = HashMap::new();
 
         for index in 0..archive.len() {
-            let mut entry = archive.by_index(index)?;
+            let entry = archive.by_index_raw(index)?;
             if entry.is_dir() {
                 continue;
             }
@@ -52,20 +83,18 @@ impl AssetSource {
             if name.is_empty() {
                 continue;
             }
-            let mut data = Vec::with_capacity(entry.size() as usize);
-            entry
-                .read_to_end(&mut data)
-                .map_err(|source| PakError::Io {
-                    path: PathBuf::new(),
-                    source,
-                })?;
-            files.insert(name, Arc::from(data));
+            entries.insert(name, (index, entry.size()));
         }
 
         Ok(Self {
             root: PathBuf::new(),
             canonical_root: None,
-            files,
+            files: HashMap::new(),
+            archive: Some(Arc::new(Archive {
+                entries,
+                zip: Mutex::new(archive),
+                cache: Mutex::new(HashMap::new()),
+            })),
             directory: false,
         })
     }
@@ -75,6 +104,7 @@ impl AssetSource {
             root: root.to_path_buf(),
             canonical_root: root.canonicalize().ok(),
             files: HashMap::new(),
+            archive: None,
             directory: true,
         }
     }
@@ -90,6 +120,8 @@ impl AssetSource {
         if self.directory {
             resolve_within(&self.root, self.canonical_root.as_deref(), &key)
                 .is_some_and(|path| path.is_file())
+        } else if let Some(archive) = &self.archive {
+            archive.entries.contains_key(&key)
         } else {
             self.files.contains_key(&key)
         }
@@ -102,6 +134,8 @@ impl AssetSource {
             std::fs::metadata(full)
                 .ok()
                 .map(|metadata| metadata.len() as usize)
+        } else if let Some(archive) = &self.archive {
+            archive.entries.get(&key).map(|(_, size)| *size as usize)
         } else {
             self.files.get(&key).map(|bytes| bytes.len())
         }
@@ -112,6 +146,8 @@ impl AssetSource {
         if self.directory {
             let full = resolve_within(&self.root, self.canonical_root.as_deref(), &key)?;
             std::fs::read(full).ok().map(Arc::from)
+        } else if let Some(archive) = &self.archive {
+            archive.read(&key)
         } else {
             self.files.get(&key).cloned()
         }
@@ -123,7 +159,9 @@ impl AssetSource {
     }
 
     pub fn file_count(&self) -> usize {
-        self.files.len()
+        self.archive
+            .as_ref()
+            .map_or(self.files.len(), |archive| archive.entries.len())
     }
 }
 

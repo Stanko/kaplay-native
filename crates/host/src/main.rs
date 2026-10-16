@@ -40,6 +40,12 @@ struct Args {
     screenshot: Option<PathBuf>,
     #[arg(long, help = "Write the last frame as raw top-down RGBA bytes")]
     screenshot_raw: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Write a JSON benchmark summary before exiting"
+    )]
+    bench_json: Option<PathBuf>,
     #[arg(long, help = "Directory for the localStorage save file")]
     save_dir: Option<PathBuf>,
     #[arg(long, help = "Allow http(s) requests (disabled by default)")]
@@ -156,6 +162,7 @@ fn main() -> anyhow::Result<()> {
         frames: args.frames,
         screenshot: args.screenshot,
         screenshot_raw: args.screenshot_raw,
+        bench_json: args.bench_json,
         save_dir,
         game_name: args
             .title

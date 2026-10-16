@@ -10,3 +10,10 @@ rusty_h264-common.workspace = true
 rusty_h264-decoder.workspace = true
 symphonia.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "video"
+harness = false

@@ -5,19 +5,22 @@
 //! a channel that the host drains once per frame.
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use polling::{Event, Events, Poller};
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::protocol::{CloseFrame, Message};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::Utf8Bytes;
+use tungstenite::{Error as SocketError, Utf8Bytes};
 
 pub const MAX_BODY: u64 = 64 * 1024 * 1024;
-const SOCKET_POLL: Duration = Duration::from_millis(20);
+const SOCKET_KEY: usize = 0;
+const FLUSH_POLL: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
@@ -62,11 +65,17 @@ enum FetchError {
     Http(#[from] ureq::Error),
 }
 
+#[derive(Clone)]
+struct SocketHandle {
+    outgoing: Sender<SocketOut>,
+    poller: Arc<Poller>,
+}
+
 pub struct Network {
     events: Receiver<NetworkEvent>,
     event_sender: Sender<NetworkEvent>,
     requests: Sender<HttpRequest>,
-    sockets: Arc<Mutex<HashMap<u32, Sender<SocketOut>>>>,
+    sockets: Arc<Mutex<HashMap<u32, SocketHandle>>>,
 }
 
 impl Network {
@@ -112,14 +121,27 @@ impl Network {
 
     pub fn open_socket(&self, id: u32, url: String) {
         let (sender, receiver) = channel::<SocketOut>();
+        let poller = match Poller::new() {
+            Ok(poller) => Arc::new(poller),
+            Err(error) => {
+                log::error!("failed to create a socket poller: {error}");
+                return;
+            }
+        };
         if let Ok(mut sockets) = self.sockets.lock() {
-            sockets.insert(id, sender);
+            sockets.insert(
+                id,
+                SocketHandle {
+                    outgoing: sender,
+                    poller: Arc::clone(&poller),
+                },
+            );
         }
         let sockets = Arc::clone(&self.sockets);
         let events = self.event_sender.clone();
         let spawned = thread::Builder::new()
             .name(format!("kaplay-net-socket-{id}"))
-            .spawn(move || socket_worker(id, url, receiver, events, sockets));
+            .spawn(move || socket_worker(id, url, receiver, events, sockets, poller));
         if let Err(error) = spawned {
             log::error!("failed to start the socket thread: {error}");
         }
@@ -138,13 +160,14 @@ impl Network {
     }
 
     fn send_to_socket(&self, id: u32, message: SocketOut) {
-        let sender = self
+        let handle = self
             .sockets
             .lock()
             .ok()
             .and_then(|sockets| sockets.get(&id).cloned());
-        if let Some(sender) = sender {
-            let _ = sender.send(message);
+        if let Some(handle) = handle {
+            let _ = handle.outgoing.send(message);
+            let _ = handle.poller.notify();
         }
     }
 }
@@ -227,32 +250,40 @@ fn socket_worker(
     url: String,
     outgoing: Receiver<SocketOut>,
     events: Sender<NetworkEvent>,
-    sockets: Arc<Mutex<HashMap<u32, Sender<SocketOut>>>>,
+    sockets: Arc<Mutex<HashMap<u32, SocketHandle>>>,
+    poller: Arc<Poller>,
 ) {
     let handshake = tungstenite::connect(url.as_str());
     let (mut socket, _) = match handshake {
         Ok(value) => value,
         Err(error) => {
-            let _ = events.send(NetworkEvent::SocketError {
-                id,
-                message: error.to_string(),
-            });
-            let _ = events.send(NetworkEvent::SocketClosed {
-                id,
-                code: 1006,
-                reason: String::new(),
-            });
+            fail_socket(&events, id, error.to_string());
             if let Ok(mut sockets) = sockets.lock() {
                 sockets.remove(&id);
             }
             return;
         }
     };
-    set_read_timeout(socket.get_ref(), Some(SOCKET_POLL));
+    {
+        let stream = socket.get_mut();
+        set_nonblocking(stream, true);
+        let _ = tcp_stream(stream).set_nodelay(true);
+    }
+    let registered =
+        unsafe { poller.add(tcp_stream(socket.get_ref()), Event::readable(SOCKET_KEY)) };
+    if let Err(error) = registered {
+        fail_socket(&events, id, error.to_string());
+        if let Ok(mut sockets) = sockets.lock() {
+            sockets.remove(&id);
+        }
+        return;
+    }
     let _ = events.send(NetworkEvent::SocketOpened { id });
 
     let mut closing = false;
-    loop {
+    let mut pending_flush = false;
+    let mut ready = Events::new();
+    'worker: loop {
         while let Ok(message) = outgoing.try_recv() {
             if closing {
                 continue;
@@ -269,20 +300,24 @@ fn socket_worker(
                     socket.send(Message::Close(Some(frame)))
                 }
             };
-            if let Err(error) = result {
-                let _ = events.send(NetworkEvent::SocketError {
-                    id,
-                    message: error.to_string(),
-                });
-                let _ = events.send(NetworkEvent::SocketClosed {
-                    id,
-                    code: 1006,
-                    reason: String::new(),
-                });
-                if let Ok(mut sockets) = sockets.lock() {
-                    sockets.remove(&id);
+            match result {
+                Ok(()) => {}
+                Err(error) if is_would_block(&error) => pending_flush = true,
+                Err(error) => {
+                    fail_socket(&events, id, error.to_string());
+                    break 'worker;
                 }
-                return;
+            }
+        }
+
+        if pending_flush {
+            match socket.flush() {
+                Ok(()) => pending_flush = false,
+                Err(error) if is_would_block(&error) => {}
+                Err(error) => {
+                    fail_socket(&events, id, error.to_string());
+                    break 'worker;
+                }
             }
         }
 
@@ -309,41 +344,63 @@ fn socket_worker(
                 break;
             }
             Ok(_) => {}
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
+            Err(error) if is_would_block(&error) => {
+                let interest = if pending_flush {
+                    Event::all(SOCKET_KEY)
+                } else {
+                    Event::readable(SOCKET_KEY)
+                };
+                if let Err(error) = poller.modify(tcp_stream(socket.get_ref()), interest) {
+                    fail_socket(&events, id, error.to_string());
+                    break 'worker;
+                }
+                ready.clear();
+                let timeout = pending_flush.then_some(FLUSH_POLL);
+                if let Err(error) = poller.wait(&mut ready, timeout) {
+                    fail_socket(&events, id, error.to_string());
+                    break 'worker;
+                }
+            }
             Err(error) => {
-                let _ = events.send(NetworkEvent::SocketError {
-                    id,
-                    message: error.to_string(),
-                });
-                let _ = events.send(NetworkEvent::SocketClosed {
-                    id,
-                    code: 1006,
-                    reason: String::new(),
-                });
+                fail_socket(&events, id, error.to_string());
                 break;
             }
         }
     }
 
+    let _ = poller.delete(tcp_stream(socket.get_ref()));
     if let Ok(mut sockets) = sockets.lock() {
         sockets.remove(&id);
     }
 }
 
-fn set_read_timeout(stream: &MaybeTlsStream<TcpStream>, timeout: Option<Duration>) {
+fn fail_socket(events: &Sender<NetworkEvent>, id: u32, message: String) {
+    let _ = events.send(NetworkEvent::SocketError { id, message });
+    let _ = events.send(NetworkEvent::SocketClosed {
+        id,
+        code: 1006,
+        reason: String::new(),
+    });
+}
+
+fn is_would_block(error: &SocketError) -> bool {
+    matches!(
+        error,
+        SocketError::Io(error)
+            if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+    )
+}
+
+fn tcp_stream(stream: &MaybeTlsStream<TcpStream>) -> &TcpStream {
     match stream {
-        MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_read_timeout(timeout);
-        }
-        MaybeTlsStream::Rustls(stream) => {
-            let _ = stream.get_ref().set_read_timeout(timeout);
-        }
-        _ => {}
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => stream.get_ref(),
+        _ => unreachable!(),
     }
+}
+
+fn set_nonblocking(stream: &MaybeTlsStream<TcpStream>, nonblocking: bool) {
+    let _ = tcp_stream(stream).set_nonblocking(nonblocking);
 }
 
 #[cfg(test)]
